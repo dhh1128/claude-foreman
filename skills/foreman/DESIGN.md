@@ -56,6 +56,8 @@ The first PM to run a real plan (five gap items in one repo, one worker already 
 
 **Merge contention fired from the first launch**, before any PR existed, on every pulse and with no way to acknowledge it. It now fires only when two items in one repo are both in review, which is when merges actually queue.
 
+**Live is not healthy.** foreman1 found, at Daniel's prompting, that workers which read as live had left damage: Codex exited and left three full pytest-xdist suites hung at 0% CPU in one worker's tree for 45 minutes, still holding ports, and a later look found test processes idle for ten days in a worktree deleted at merge. `pulse` now scans the process table for processes in a worker's tree that are orphaned, or in any deleted `.worktrees/` directory, notes whether their CPU has moved since the last pulse, and puts them on the board. Idleness alone is not a finding, because a worker's own claude and shell idle in its tree whenever it waits. `reap` kills only what no live worker can be waiting on; everything else is the worker's to clean up. Its first dry run on this machine found sixteen processes in two deleted worktrees, none belonging to any plan. The same pulse reads each running worker's tmux window activity, so a worker sitting at a prompt shows as quiet.
+
 ## What was harvested from the bespoke PM
 
 The bespoke PM was a prompt kept in a private repository. foreman took from it: a brief shared by every worker (`common_brief`), a free-text `ref` field for the item's tracker id, a worker cap, and the conductor-and-ask discipline. It differs on one point that mattered: the prompt PM told the human to launch the next worker when its dependency merged. Launching is the thing foreman exists to take off him.

@@ -81,8 +81,19 @@ def _pane_has_session(pane: str, sid: str) -> bool | None:
     return False
 
 
+def _pane_activity(pane: str) -> float | None:
+    try:
+        r = subprocess.run(["tmux", "display-message", "-p", "-t", pane, "#{window_activity}"],
+                           capture_output=True, text=True, timeout=5)
+        return float(r.stdout.strip()) if r.returncode == 0 and r.stdout.strip() else None
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return None
+
+
 def world() -> engine.World:
-    return engine.World(tmux_session=_tmux_session, pane_has_session=_pane_has_session)
+    from . import procs
+    return engine.World(tmux_session=_tmux_session, pane_has_session=_pane_has_session,
+                        scan=procs.scan, pane_activity=_pane_activity)
 
 
 def _load(args):
@@ -205,6 +216,15 @@ def cmd_show(args) -> int:
     return 0
 
 
+def cmd_reap(args) -> int:
+    plan, d = _load(args)
+    lines = engine.reap(plan, d, config.load(), world(), args.go)
+    print("\n".join(lines) if lines else "no leftover processes.")
+    if lines and not args.go and any(l.startswith("would kill") for l in lines):
+        print("# dry run: nothing was killed. Add --go to kill the ones marked 'would kill'.")
+    return 0
+
+
 def cmd_addendum(args) -> int:
     p = config.addendum_path()
     try:
@@ -276,6 +296,11 @@ def build_parser() -> argparse.ArgumentParser:
     plan_arg(s)
     s.add_argument("item")
     s.set_defaults(func=cmd_show)
+    s = sub.add_parser("reap", help="list leftover processes; kill those no live worker owns "
+                       "(dry run unless --go)")
+    plan_arg(s)
+    s.add_argument("--go", action="store_true")
+    s.set_defaults(func=cmd_reap)
     s = sub.add_parser("addendum", help="print this machine's local rules for the skill")
     s.set_defaults(func=cmd_addendum)
     return p

@@ -67,7 +67,9 @@ def worker_prompt(plan: Plan, it: Item, worktree: str, resume: bool) -> str:
         f"user follow your normal rules; foreman will not do them for you. You were started "
         f"in a background window that nobody is watching, so do not stop to ask the user "
         f"anything before you begin, even if a brief says to; if you genuinely cannot proceed "
-        f"without them, report stuck and say what you need."
+        f"without them, report stuck and say what you need. If you hand work to Codex or another "
+        f"tool, make sure the processes it started (test runners especially) are gone before you "
+        f"report review or done; an exited tool can leave them running orphaned in your worktree."
     )
 
 

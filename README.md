@@ -63,6 +63,7 @@ foreman adopt <id> --session <sid>   take on a worker started by hand
 foreman report <id> <running|review|done|stuck> "<line>"   for workers
 foreman mark <id> <done|abandoned|reset> --note "<why>"
 foreman attach --target <pm>   let worker reports wake the PM session
+foreman reap [--go]            list leftover processes; kill those no live worker owns
 foreman show <id>              one item in full
 foreman check | plans | addendum
 ```

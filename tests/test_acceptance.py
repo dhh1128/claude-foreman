@@ -400,7 +400,7 @@ def test_a_worker_started_by_hand_can_be_adopted(w):
     assert b["states"]["app-decisions"] == "running"
     assert b["workers"] == [1, 3]
     assert "app-decisions running live" in w.foreman("board").stdout
-    assert w.calls("tmux") == []  # adoption launches nothing
+    assert not [c for c in w.calls("tmux") if c[0] == "new-window"]  # adoption launches nothing
 
     # Its reports count like any worker's.
     w.foreman("report", "app-decisions", "review", "PR #3 open")

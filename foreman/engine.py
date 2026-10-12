@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-from . import graph, launch as launch_mod, oracles, store
+from . import graph, launch as launch_mod, oracles, procs as procs_mod, store
 from .config import Config
 from .coord import Coord
 from .plan import Item, Plan
@@ -46,6 +46,10 @@ class World:
     #: (pane, session id) -> True if a process in that pane carries the session id in its argv,
     #: False if not, None if tmux or the process table could not be read.
     pane_has_session: Callable[[str, str], "bool | None"] = lambda pane, sid: None
+    #: Every process, or None when the process table cannot be read.
+    scan: Callable[[], "list[procs_mod.Proc] | None"] = lambda: None
+    #: A pane's last activity as epoch seconds, or None when tmux cannot say.
+    pane_activity: Callable[[str], "float | None"] = lambda pane: None
 
 
 class EngineError(RuntimeError):
@@ -154,7 +158,48 @@ def pulse(plan: Plan, plan_dir: Path, cfg: Config, world: World) -> dict[str, An
 
         if cfg.escalate == "session-coord":
             changes += _escalate(plan, plan_dir, doc, sts, world, now)
+        _quiet_panes(plan, doc, sts, world)
+        changes += _leftovers(plan, doc, graph.states(plan, doc), cfg, world, now)
     return {"changes": changes}
+
+
+def trees(plan: Plan, doc: dict[str, Any], sts: dict[str, str]) -> dict[str, tuple[str, str]]:
+    """Each recorded worker tree, mapped to (item, state). A tree that is a repo's main
+    checkout is left out: everything run there is somebody's, not this worker's leftovers."""
+    out = {}
+    for iid, it in plan.items.items():
+        wt = doc["items"].get(iid, {}).get("worktree", "")
+        if wt and wt.rstrip("/") != it.repo.rstrip("/"):
+            out[wt.rstrip("/")] = (iid, sts[iid])
+    return out
+
+
+def _leftovers(plan: Plan, doc: dict[str, Any], sts: dict[str, str], cfg: Config,
+               world: World, now: dt.datetime) -> list[str]:
+    ps = world.scan()
+    if ps is None:
+        return []  # could not look; keep the last findings rather than clearing them
+    t = trees(plan, doc, sts)
+    epoch = now.timestamp()
+    found = procs_mod.analyse(ps, t, doc.get("procs", {}), epoch, cfg.idle_minutes,
+                              own_pids=(os.getpid(),))
+    doc["procs"] = procs_mod.next_cpu_record(ps, doc.get("procs", {}), epoch, t)
+    before = {f["key"] for f in doc.get("leftovers", [])}
+    doc["leftovers"] = [{"key": f.proc.key, "pid": f.proc.pid, "item": f.item,
+                         "why": list(f.why), "cwd": f.proc.cwd, "cmd": f.proc.cmd[:120],
+                         "reapable": f.reapable} for f in found]
+    new = [f for f in found if f.proc.key not in before]
+    return [f"leftover pid {f.proc.pid} ({f.item or 'no item'}): {', '.join(f.why)}"
+            for f in new]
+
+
+def _quiet_panes(plan: Plan, doc: dict[str, Any], sts: dict[str, str], world: World) -> None:
+    for iid in plan.items:
+        rec = doc["items"].get(iid, {})
+        if sts[iid] == "running" and rec.get("pane") and rec.get("worker") != "dead":
+            t = world.pane_activity(rec["pane"])
+            if t is not None:
+                rec["pane_activity"] = t
 
 
 def _escalate(plan: Plan, plan_dir: Path, doc: dict[str, Any], sts: dict[str, str],
@@ -390,4 +435,27 @@ def stalled(plan: Plan, doc: dict[str, Any], cfg: Config, now: dt.datetime) -> l
         last = _parse(rec.get("last_report", ""))
         if sts[iid] == "running" and last and now - last > dt.timedelta(hours=cfg.stall_hours):
             out.append(iid)
+    return out
+
+
+def reap(plan: Plan, plan_dir: Path, cfg: Config, world: World, go: bool,
+         kill=procs_mod.kill) -> list[str]:
+    """Leftovers no live worker can be waiting on. Lists them; kills them only with `go`."""
+    ps = world.scan()
+    if ps is None:
+        raise EngineError("the process table cannot be read here (no /proc); nothing to reap.")
+    doc = store.read(plan_dir)
+    sts = graph.states(plan, doc)
+    found = procs_mod.analyse(ps, trees(plan, doc, sts), doc.get("procs", {}),
+                              world.now().timestamp(), cfg.idle_minutes, own_pids=(os.getpid(),))
+    out = []
+    for f in found:
+        line = (f"pid {f.proc.pid} [{f.item or 'no item'}] {', '.join(f.why)}: "
+                f"{f.proc.cmd[:80]}  (cwd {f.proc.cwd})")
+        if not f.reapable:
+            out.append(f"leave  {line} -- a live worker may own it; tell the worker")
+        elif go:
+            out.append(f"{kill(f.proc)}  {line}")
+        else:
+            out.append(f"would kill  {line}")
     return out

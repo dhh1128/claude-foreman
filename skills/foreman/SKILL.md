@@ -54,6 +54,8 @@ The cap on live workers comes from config; `foreman` refuses past it and ready i
 - **Stuck.** Read the one line. If you or a peer session can answer it, answer it; if it is the user's to decide, file one ask that stands on its own.
 - **Claims done, oracle disagrees.** Usually the PR is open and not merged. Leave it. If the oracle is wrong, fix the oracle in the plan file rather than marking done by hand.
 - **Late, or overdue.** The board gives the chain that cannot finish in time. Tell the user once, with the chain and the number of days, and what you would cut.
+- **Leftover processes.** Something a worker started is still running, orphaned or in a deleted worktree; the line names the pids. If the item is live, tell its worker to clean up under its own worktree. `foreman reap` lists what no live worker can own (deleted worktrees, finished items) and `foreman reap --go` kills those; it never kills anything a live worker might be waiting on.
+- **Pane quiet.** A running worker's window has not changed for a while and it has not said it is waiting: it may be sitting at a prompt. Message it, or tell the user which window.
 - **Merges queue in a repo.** Two items will land in one repo. Tell those workers to serialize with `session-coord lock merge`. foreman has no lock of its own, on purpose.
 - **Decision not escalated.** The ask could not be filed; the line says why. Fix that, or file it yourself.
 

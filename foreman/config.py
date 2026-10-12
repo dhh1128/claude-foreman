@@ -13,6 +13,8 @@ Config: `$FOREMAN_CONFIG`, default `~/.config/foreman/config.toml`. Every key is
     tmux_session = ""        # where worker windows open; default the caller's tmux session
     claude = ["claude"]      # the command that starts a worker, before its own flags
     escalate = "session-coord"   # or "none": list decisions on the board, file nothing
+    idle_minutes = 30        # a leftover process whose CPU has not moved this long is "idle"
+    pane_quiet_minutes = 30  # a running worker's pane unchanged this long may be at a prompt
 
 `FOREMAN_MAX_WORKERS` overrides `max_workers`. A plan's own `max_workers` can only lower the
 cap, never raise it: the machine's limit exists because of memory, and a plan file written on
@@ -57,6 +59,8 @@ class Config:
     tmux_session: str = ""
     claude: tuple[str, ...] = ("claude",)
     escalate: str = "session-coord"
+    idle_minutes: float = 30.0       # CPU still this long marks a leftover process as idle
+    pane_quiet_minutes: float = 30.0 # a running worker's pane unchanged this long: at a prompt?
 
     def cap(self, plan_cap: int | None) -> int:
         return min(self.max_workers, plan_cap) if plan_cap else self.max_workers

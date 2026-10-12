@@ -63,7 +63,10 @@ def worker_prompt(plan: Plan, it: Item, worktree: str, resume: bool) -> str:
         f"done \"<one line>\"` when you believe the work is finished, and `{rep} stuck \"<what "
         f"you need>\"` if you cannot proceed. foreman checks the exit condition itself and "
         f"does not take your word for it: {oracle}. Merging, review, and anything needing the "
-        f"user follow your normal rules; foreman will not do them for you."
+        f"user follow your normal rules; foreman will not do them for you. You were started "
+        f"in a background window that nobody is watching, so do not stop to ask the user "
+        f"anything before you begin, even if a brief says to; if you genuinely cannot proceed "
+        f"without them, report stuck and say what you need."
     )
 
 
@@ -98,7 +101,13 @@ def plan_launch(plan: Plan, it: Item, *, tmux_session: str, claude: Sequence[str
     tmux = ["tmux", "new-window", "-d", "-P", "-F", "#{pane_id}"]
     if target:
         tmux += ["-t", target]
-    tmux += ["-n", it.topic, "-c", wt, *cmd]
+    # claude runs as a CHILD of a shell, not as the pane's own process. session-coord finds a
+    # pane's claude among the pane process's descendants, so a pane whose process IS claude
+    # never showed on its board, and the record was swept as stale (first real plan,
+    # 2026-10-12). The trailing exec leaves a shell in the worktree when claude exits, which is
+    # also what a hand-started window looks like.
+    shell = ["sh", "-c", '"$@"; exec "${SHELL:-/bin/sh}" -l', "foreman-worker", *cmd]
+    tmux += ["-n", it.topic, "-c", wt, *shell]
     steps.append(Step(tuple(tmux), "open a window running the worker", capture="pane"))
     return Launch(it.id, sid, wt, it.topic, resume, tuple(steps))
 

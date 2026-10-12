@@ -48,8 +48,41 @@ def _tmux_session() -> str:
         return ""
 
 
+def _pane_has_session(pane: str, sid: str) -> bool | None:
+    """Does any process in `pane` carry `sid` in its argv? None when it cannot be told."""
+    try:
+        r = subprocess.run(["tmux", "display-message", "-p", "-t", pane, "#{pane_pid}"],
+                           capture_output=True, text=True, timeout=5)
+        if r.returncode != 0:
+            # tmux answered: the pane is gone. A missing server is a failure to look.
+            return False if "can't find" in r.stderr else None
+        root = int(r.stdout.strip())
+        ps = subprocess.run(["ps", "-eo", "pid=,ppid=,args="], capture_output=True, text=True,
+                            timeout=5)
+        if ps.returncode != 0:
+            return None
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return None
+    kids: dict[int, list[tuple[int, str]]] = {}
+    for line in ps.stdout.splitlines():
+        parts = line.split(None, 2)
+        if len(parts) >= 2 and parts[0].isdigit() and parts[1].isdigit():
+            kids.setdefault(int(parts[1]), []).append((int(parts[0]), parts[2] if len(parts) > 2 else ""))
+    args_of = {pid: a for v in kids.values() for pid, a in v}
+    todo, seen = [root], set()
+    while todo:
+        pid = todo.pop()
+        if pid in seen:
+            continue
+        seen.add(pid)
+        if sid in args_of.get(pid, ""):
+            return True
+        todo.extend(c for c, _ in kids.get(pid, []))
+    return False
+
+
 def world() -> engine.World:
-    return engine.World(tmux_session=_tmux_session)
+    return engine.World(tmux_session=_tmux_session, pane_has_session=_pane_has_session)
 
 
 def _load(args):
@@ -160,7 +193,7 @@ def cmd_attach(args) -> int:
         raise ConfigError("give --target: this session's name, pane or session id, as "
                           "session-coord msg accepts it.")
     repo = str(Path(args.repo or os.getcwd()).expanduser().resolve())
-    print(engine.attach(d, world(), repo, target))
+    print(engine.attach(d, world(), repo, target, os.environ.get("TMUX_PANE", "")))
     return 0
 
 

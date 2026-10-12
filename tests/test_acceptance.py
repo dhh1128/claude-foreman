@@ -17,7 +17,11 @@ from pathlib import Path
 
 import pytest
 
+import shlex
+
 from fakes import BIN, World, make_repo
+
+WRAP = shlex.join(["sh", "-c", '"$@"; exec "${SHELL:-/bin/sh}" -l', "foreman-worker"])
 
 PLAN = '''
 [plan]
@@ -172,7 +176,7 @@ def test_3_dry_run_prints_the_worktree_and_tmux_command_and_executes_nothing(w):
     assert f"git -C {core} fetch origin main" in out
     assert f"git -C {core} worktree add {wt} -b core-lib origin/main" in out
     line = next(l for l in out.splitlines() if l.startswith("tmux new-window"))
-    assert f"-n core-lib -c {wt} claude --session-id " in line
+    assert f"-n core-lib -c {wt} {WRAP} claude --session-id " in line
     assert "briefs/common.md then " in line and "briefs/core-lib.md" in line
     assert "foreman report --plan roadmap core-lib" in line
     assert "dry run: nothing was executed" in out
@@ -365,13 +369,15 @@ def test_a_relaunch_of_a_live_worker_is_refused(w):
 
 
 def test_merge_contention_is_on_the_board(w):
-    w.foreman("launch", "app-decisions", "--go", env={"TMUX": ""})
-    w.signal("decisions")
-    w.foreman("pulse")
+    w.foreman("adopt", "app-decisions", "--session", "s1")
+    w.foreman("report", "app-decisions", "review", "PR #1")
+    assert "merges queue" not in w.foreman("board").stdout
     (w.fake / "merged.txt").write_text("upstream/lib#1576\nupstream/lib#1577\n")
     w.foreman("pulse")
+    w.foreman("adopt", "app-upstream", "--session", "s2")
+    w.foreman("report", "app-upstream", "review", "PR #2")
     out = w.foreman("board").stdout
-    assert f"merges queue in {w.repos / 'app'}: app-feature, app-upstream" in out
+    assert f"merges queue in {w.repos / 'app'}: app-decisions, app-upstream" in out
 
 
 def test_deadlines_flag_a_chain_that_cannot_finish(w):
@@ -417,4 +423,35 @@ def test_relaunching_an_adopted_worker_reuses_its_recorded_tree(w):
     out = w.foreman("launch", "--relaunch", "app-decisions").stdout
     assert "worktree add" not in out
     line = next(l for l in out.splitlines() if l.startswith("tmux new-window"))
-    assert f"-c {app} claude --resume hand-1" in line
+    assert f"-c {app} {WRAP} claude --resume hand-1" in line
+
+
+def test_launch_runs_claude_under_a_shell_so_session_coord_can_find_it(w):
+    """session-coord looks for a pane's claude among the pane process's descendants."""
+    w.foreman("launch", "app-decisions", "--go", env={"TMUX": ""})
+    (call,) = w.calls("tmux")
+    i = call.index("-c")
+    assert call[i + 2:i + 5] == ["sh", "-c", '"$@"; exec "${SHELL:-/bin/sh}" -l']
+    assert call[i + 6] == "claude"
+    prompt = call[-1]
+    assert "do not stop to ask the user" in prompt
+
+
+def test_configured_claude_flags_reach_the_worker(w):
+    Path(os.environ["FOREMAN_CONFIG"]).write_text(
+        'claude = ["claude", "--dangerously-skip-permissions"]\n')
+    out = w.foreman("launch", "app-decisions").stdout
+    assert "claude --dangerously-skip-permissions --session-id " in out
+
+
+def test_the_pm_reporting_on_a_workers_behalf_does_not_ring_itself(w):
+    w.foreman("attach", "--repo", str(w.repos / "app"), "--target", "pm", env={"TMUX_PANE": "%9"})
+    w.foreman("report", "app-decisions", "stuck", "waiting on Q-1", env={"TMUX_PANE": "%9"})
+    assert not (w.fake / "msgs.txt").exists()
+    w.foreman("report", "app-decisions", "stuck", "waiting on Q-1", env={"TMUX_PANE": "%3"})
+    assert (w.fake / "msgs.txt").exists()
+
+
+def test_adopt_warns_when_the_tree_does_not_exist(w):
+    out = w.foreman("adopt", "app-decisions", "--session", "s1").stdout
+    assert "does not exist yet" in out

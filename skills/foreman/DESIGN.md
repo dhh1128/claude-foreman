@@ -42,6 +42,20 @@ This was the third time the need came up, which is why it was built generically.
 
 **The board is a budget.** A waking PM reads it every time. Attention first, one line per worker in flight, everything merely waiting compressed to ids. A test holds a twenty-item plan's board under 1600 characters, about 400 tokens.
 
+## What the first real plan changed (2026-10-12)
+
+The first PM to run a real plan (five gap items in one repo, one worker already running by hand) reported in its first hour; each item below is its observation, with the cause re-derived here.
+
+**Launched workers were invisible to session-coord.** The PM saw that workers started by `launch` never appeared on `session-coord board`, while a hand-started one did. Cause: `launch` ran claude as the tmux pane's own process, and session-coord looks for a pane's claude only among the pane process's *descendants*, so the record was swept as stale on the next read. Two fixes. `launch` now runs claude as the child of a shell (`sh -c '"$@"; exec $SHELL -l'`), which is the shape of every hand-started window; the trailing `exec` leaves a shell in the worktree when claude exits, as a hand-started window does. And liveness gained a second proof: when session-coord does not list the session, the recorded pane is checked for a process whose argv carries the session id. A worker foreman started always has its id in its argv, so this proves exactly the workers foreman launched, and says nothing about anyone else's.
+
+**Flags did not reach the workers.** Daniel's sessions all run with a permission-mode flag that comes from a shell function, and tmux does not run an interactive shell, so the flag never reached a launched worker, which would have sat at permission prompts in a window nobody watched. The `claude` config key already carried flags; the README now says why it has to. A handoff telling the worker to ask the human before starting was the same failure by another route, so the worker prompt now says the window is unattended and to report `stuck` instead of waiting.
+
+**`adopt` was missing**, because the plan's first worker was started by hand before foreman existed. Added, with a warning when the recorded tree does not exist yet.
+
+**The PM's own report rang the PM.** `attach` records the PM's pane, and a report made from it no longer rings it.
+
+**Merge contention fired from the first launch**, before any PR existed, on every pulse and with no way to acknowledge it. It now fires only when two items in one repo are both in review, which is when merges actually queue.
+
 ## What was harvested from the bespoke PM
 
 The bespoke PM was a prompt kept in a private repository. foreman took from it: a brief shared by every worker (`common_brief`), a free-text `ref` field for the item's tracker id, a worker cap, and the conductor-and-ask discipline. It differs on one point that mattered: the prompt PM told the human to launch the next worker when its dependency merged. Launching is the thing foreman exists to take off him.
@@ -58,6 +72,12 @@ It also modelled a decision *inside* a work item ("G14 stops once for approval o
 - **Its own merge lock, its own liveness, its own message channel.** session-coord has all three.
 
 ## Known gaps — what has not been verified
+
+Reported by the first real PM and not yet built:
+
+- **Decision gates inside a build item.** A worker that must stop for the human's approval of something it has just written cannot be modelled as a `decision` item, which would be asked at the next pulse, before there is anything to approve. The PM used `report stuck` with the ask ids in the line. Wanted: `report <id> decision "<what to approve>"` filing the ask itself, or a dependency on a worker milestone.
+- **The PM is not registered where its workers are.** Claiming the conductor role in the work repo needed a hand `session-coord register` there. `attach` could do it.
+- **`foreman` is not on PATH in a session that predates the plugin install**, and the versioned cache path changes on every update. A stable shim outside the plugin would fix it; none is installed by the plugin.
 
 - **A real launch has never run.** The acceptance tests drive real git (worktrees created from a bare origin) but fake tmux, claude, gh and session-coord. Untested: that `tmux new-window … claude --session-id <uuid> "<prompt>"` starts a worker that takes the prompt as its first turn; that session-coord's SessionStart hook records the same id that was passed to `--session-id`; and that tmux-claude's `save`/`restore` round-trips a worker started this way.
 - **The PM's ask repo.** Asks go to the project recorded by `foreman attach`, else the directory `pulse` runs in. If that is not a git repo, session-coord files nothing, and the board says the escalation failed. Not tried against a real queue.

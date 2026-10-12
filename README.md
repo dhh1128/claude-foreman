@@ -80,9 +80,11 @@ max_workers = 3            # FOREMAN_MAX_WORKERS overrides; a plan can only lowe
 stall_hours = 4
 launch_grace_minutes = 3
 tmux_session = ""          # default: the session foreman is run from
-claude = ["claude"]        # the command that starts a worker
+claude = ["claude"]        # the command that starts a worker, with any flags it needs
 escalate = "session-coord" # or "none"
 ```
+
+Workers are started by tmux, not by your interactive shell, so a shell function or alias that adds flags to `claude` does not apply to them. Put the flags in `claude`, e.g. `["claude", "--dangerously-skip-permissions"]`; otherwise unattended workers stop at permission prompts nobody sees.
 
 House rules for the skill go in `~/.config/foreman/addendum.md` (or `FOREMAN_ADDENDUM`), which the skill reads first and treats as more specific than itself.
 

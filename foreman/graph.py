@@ -144,9 +144,13 @@ def inverted_dues(plan: Plan) -> list[tuple[str, str]]:
 
 
 def contention(plan: Plan, sts: Mapping[str, str]) -> dict[str, list[str]]:
-    """Repos with two or more build items ready or in flight: their merges will queue."""
+    """Repos with two or more build items in review: their merges will queue.
+
+    Counting ready and running items as well fired on every pulse from the first launch, long
+    before any PR existed, with no way to acknowledge it. The first real PM read it as noise.
+    """
     by_repo: dict[str, list[str]] = {}
     for iid, it in plan.items.items():
-        if it.kind == "build" and sts[iid] in ("ready",) + ACTIVE:
+        if it.kind == "build" and sts[iid] == "review":
             by_repo.setdefault(it.repo.rstrip("/"), []).append(iid)
     return {r: ids for r, ids in by_repo.items() if len(ids) > 1}

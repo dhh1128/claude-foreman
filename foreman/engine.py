@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -38,6 +39,10 @@ class World:
     now: Callable[[], dt.datetime] = utcnow
     tmux_session: Callable[[], str] = lambda: ""
     cwd: Callable[[], str] = lambda: str(Path.cwd())
+    pane: Callable[[], str] = lambda: os.environ.get("TMUX_PANE", "")
+    #: (pane, session id) -> True if a process in that pane carries the session id in its argv,
+    #: False if not, None if tmux or the process table could not be read.
+    pane_has_session: Callable[[str, str], "bool | None"] = lambda pane, sid: None
 
 
 class EngineError(RuntimeError):
@@ -120,10 +125,15 @@ def pulse(plan: Plan, plan_dir: Path, cfg: Config, world: World) -> dict[str, An
                 continue
             live = live_by_repo.get(it.repo)
             launched = _parse(rec.get("launched", ""))
-            if live is None:
-                worker = "unknown"
-            elif rec["session"] in live:
+            in_pane = (world.pane_has_session(rec["pane"], rec["session"])
+                       if rec.get("pane") and (live is None or rec["session"] not in live)
+                       else None)
+            if live is not None and rec["session"] in live:
                 worker = "live"
+            elif in_pane:
+                worker = "live"
+            elif live is None:
+                worker = "unknown"
             elif launched and now - launched < grace:
                 worker = "starting"
             else:
@@ -281,7 +291,11 @@ def adopt(plan: Plan, plan_dir: Path, world: World, iid: str, session: str, pane
                     "last_line": note or "adopted"})
         _event(plan_dir, now, iid, "adopt", session=session, pane=pane,
                worktree=rec["worktree"], note=note)
-    return f"{iid} adopted: session {session}" + (f", pane {pane}" if pane else "")
+    msg = f"{iid} adopted: session {session}" + (f", pane {pane}" if pane else "")
+    if not Path(rec["worktree"]).is_dir():
+        msg += (f"\nwarning: {rec['worktree']} does not exist yet. A relaunch would create it "
+                "from origin; re-adopt with --worktree once the worker has moved.")
+    return msg
 
 
 # --- report, mark, attach -----------------------------------------------------------------
@@ -325,7 +339,8 @@ def report(plan: Plan, plan_dir: Path, world: World, iid: str, state: str, line:
         rec["last_line"] = line
         _event(plan_dir, now, iid, "report", state=state, line=line, outcome=outcome)
         pm = dict(doc.get("pm", {}))
-    if state in ("review", "done", "stuck") and pm.get("repo") and pm.get("target"):
+    from_pm = bool(pm.get("pane")) and pm.get("pane") == world.pane()
+    if state in ("review", "done", "stuck") and pm.get("repo") and pm.get("target") and not from_pm:
         world.coord.msg(pm["repo"], pm["target"],
                         f"foreman: {outcome}. Worker says: {line}. Run `foreman pulse --plan "
                         f"{plan.name}`.")
@@ -352,10 +367,10 @@ def mark(plan: Plan, plan_dir: Path, world: World, iid: str, state: str, note: s
     return f"{iid} marked {state}"
 
 
-def attach(plan_dir: Path, world: World, repo: str, target: str) -> str:
+def attach(plan_dir: Path, world: World, repo: str, target: str, pane: str = "") -> str:
     """Record where the PM session is, so worker reports can wake it through session-coord."""
     with store.transaction(plan_dir) as doc:
-        doc["pm"] = {"repo": repo, "target": target, "since": _iso(world.now())}
+        doc["pm"] = {"repo": repo, "target": target, "pane": pane, "since": _iso(world.now())}
     return f"worker reports will message {target} in {repo}"
 
 

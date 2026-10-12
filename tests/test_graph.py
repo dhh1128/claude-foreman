@@ -106,9 +106,9 @@ def test_inverted_dues():
     assert graph.inverted_dues(parse(body2, Path("/p/plan.toml"))) == [("b", "a")]
 
 
-def test_contention_names_repos_with_two_live_build_items():
+def test_contention_waits_until_two_items_are_in_review():
     p = _p()
-    s = graph.states(p, _doc(ext="done"))
+    assert graph.contention(p, graph.states(p, _doc(ext="done"))) == {}
+    assert graph.contention(p, graph.states(p, _doc(ext="done", a="review", c="running"))) == {}
+    s = graph.states(p, _doc(ext="done", a="review", c="review"))
     assert graph.contention(p, s) == {"/r/one": ["a", "c"]}
-    s = graph.states(p, _doc(ext="done", a="done"))
-    assert graph.contention(p, s) == {"/r/one": ["b", "c"]}

@@ -59,6 +59,7 @@ foreman pulse                  check oracles and workers, escalate decisions, pr
 foreman launch --ready         what would launch now; prints the exact commands, runs nothing
 foreman launch --ready --go    create worktrees, open tmux windows, start workers
 foreman launch --relaunch <id> --go   resume a dead worker's conversation
+foreman adopt <id> --session <sid>   take on a worker started by hand
 foreman report <id> <running|review|done|stuck> "<line>"   for workers
 foreman mark <id> <done|abandoned|reset> --note "<why>"
 foreman attach --target <pm>   let worker reports wake the PM session

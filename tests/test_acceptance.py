@@ -380,3 +380,41 @@ def test_deadlines_flag_a_chain_that_cannot_finish(w):
     p.write_text(t)
     out = w.foreman("board").stdout
     assert "ext-lib: overdue (due 2000-01-01" in out
+
+
+def test_a_worker_started_by_hand_can_be_adopted(w):
+    """The first real plan began with one worker the human had already started himself."""
+    core = w.repos / "core"
+    w.set_board(["hand-started-1"])
+    out = w.foreman("adopt", "app-decisions", "--session", "hand-started-1", "--pane", "%7",
+                    "--worktree", str(w.repos / "app")).stdout
+    assert "adopted" in out
+    w.foreman("pulse")
+    b = board(w)
+    assert b["states"]["app-decisions"] == "running"
+    assert b["workers"] == [1, 3]
+    assert "app-decisions running live" in w.foreman("board").stdout
+    assert w.calls("tmux") == []  # adoption launches nothing
+
+    # Its reports count like any worker's.
+    w.foreman("report", "app-decisions", "review", "PR #3 open")
+    assert board(w)["states"]["app-decisions"] == "review"
+
+    # Refused: an item that is not a build item, or one that already has a live worker.
+    r = w.foreman("adopt", "trust-posture", "--session", "x", check=False)
+    assert r.returncode == 2 and "decision item" in r.stderr
+    r = w.foreman("adopt", "app-decisions", "--session", "other", check=False)
+    assert r.returncode == 2 and "already has a worker" in r.stderr
+
+
+def test_relaunching_an_adopted_worker_reuses_its_recorded_tree(w):
+    cfg = Path(os.environ["FOREMAN_CONFIG"])
+    cfg.write_text("launch_grace_minutes = 0\n")
+    app = w.repos / "app"
+    w.foreman("adopt", "app-decisions", "--session", "hand-1", "--worktree", str(app))
+    w.set_board([])
+    w.foreman("pulse")
+    out = w.foreman("launch", "--relaunch", "app-decisions").stdout
+    assert "worktree add" not in out
+    line = next(l for l in out.splitlines() if l.startswith("tmux new-window"))
+    assert f"-c {app} claude --resume hand-1" in line

@@ -210,14 +210,17 @@ def prepare(plan: Plan, plan_dir: Path, cfg: Config, world: World, ids: list[str
             if used >= cap:
                 raise EngineError(f"{used} of {cap} workers are live; {iid} waits for a slot.")
             used += 1
-        default = launch_mod.default_branch(it.repo, world.run) if not it.base else it.base
-        wt = f"{it.repo.rstrip('/')}/.worktrees/{it.topic}"
+        kept = rec.get("worktree", "") if relaunch else ""
+        if kept and not launch_mod.worktree_exists(kept):
+            kept = ""
+        wt = kept or f"{it.repo.rstrip('/')}/.worktrees/{it.topic}"
+        exists = launch_mod.worktree_exists(wt)
+        default = it.base or ("" if exists else launch_mod.default_branch(it.repo, world.run))
         out.append(launch_mod.plan_launch(
             plan, it, tmux_session=cfg.tmux_session or world.tmux_session(),
-            claude=cfg.claude, default_branch=default,
-            worktree_exists=launch_mod.worktree_exists(wt),
-            branch_exists=launch_mod.branch_exists(it.repo, it.topic, world.run),
-            session=session))
+            claude=cfg.claude, default_branch=default, worktree_exists=exists,
+            branch_exists=False if exists else launch_mod.branch_exists(it.repo, it.topic, world.run),
+            session=session, worktree=kept))
     return out
 
 
@@ -247,6 +250,38 @@ def commit_launch(plan: Plan, plan_dir: Path, cfg: Config, world: World,
         _event(plan_dir, now, ln.item, "relaunch" if ln.resume else "launch",
                session=ln.session, pane=got.get("pane", ""), worktree=ln.worktree)
     return got
+
+
+def adopt(plan: Plan, plan_dir: Path, world: World, iid: str, session: str, pane: str,
+          worktree: str, note: str) -> str:
+    """Take on a worker someone started by hand, so foreman watches it like its own.
+
+    Nothing is launched. The cap is not enforced, because the worker already exists; refusing
+    would only make the record disagree with the world.
+    """
+    it = plan.items.get(iid)
+    if it is None:
+        raise EngineError(f"no item {iid!r} in plan {plan.name!r}.")
+    if it.kind != "build":
+        raise EngineError(f"{iid} is a {it.kind} item; only build items have workers.")
+    now = world.now()
+    with store.transaction(plan_dir) as doc:
+        sts = graph.states(plan, doc)
+        rec = _rec(doc, iid)
+        if sts[iid] in graph.FINAL:
+            raise EngineError(f"{iid} is already {sts[iid]}.")
+        if rec.get("session") and rec["session"] != session and rec.get("worker") != "dead":
+            raise EngineError(f"{iid} already has a worker ({rec['session']}, "
+                              f"{rec.get('worker', 'unchecked')}); `foreman mark {iid} reset` "
+                              "first if that one is gone.")
+        rec.update({"state": rec.get("state") if sts[iid] in graph.ACTIVE else "running",
+                    "session": session, "pane": pane,
+                    "worktree": worktree or f"{it.repo.rstrip('/')}/.worktrees/{it.topic}",
+                    "launched": _iso(now), "last_report": _iso(now), "worker": "starting",
+                    "last_line": note or "adopted"})
+        _event(plan_dir, now, iid, "adopt", session=session, pane=pane,
+               worktree=rec["worktree"], note=note)
+    return f"{iid} adopted: session {session}" + (f", pane {pane}" if pane else "")
 
 
 # --- report, mark, attach -----------------------------------------------------------------

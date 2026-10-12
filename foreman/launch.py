@@ -69,10 +69,16 @@ def worker_prompt(plan: Plan, it: Item, worktree: str, resume: bool) -> str:
 
 def plan_launch(plan: Plan, it: Item, *, tmux_session: str, claude: Sequence[str],
                 default_branch: str, worktree_exists: bool, branch_exists: bool,
-                session: str | None = None) -> Launch:
-    """The exact commands for one launch. `session` given means resume that conversation."""
+                session: str | None = None, worktree: str = "") -> Launch:
+    """The exact commands for one launch. `session` given means resume that conversation.
+
+    `worktree` names a tree the worker already used -- an adopted worker may have run in the
+    main checkout -- and is reused as it is, with no git steps.
+    """
     repo = it.repo.rstrip("/")
-    wt = f"{repo}/.worktrees/{it.topic}"
+    wt = worktree or f"{repo}/.worktrees/{it.topic}"
+    if worktree:
+        worktree_exists = True
     base = it.base or default_branch
     resume = session is not None
     sid = session or str(uuid.uuid4())

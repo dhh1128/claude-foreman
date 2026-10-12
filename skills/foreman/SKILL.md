@@ -42,6 +42,8 @@ foreman launch --ready --go     # creates worktrees, opens tmux windows, starts 
 
 **The first launches of any plan are dry runs, shown to the user.** Real launches start only when the user has said the dry run looks right. After that, launching ready items is your job and needs no further permission unless the addendum says otherwise.
 
+**A worker someone already started by hand** is adopted rather than relaunched, so foreman watches it like its own: find its session id with `session-coord board --repo <repo> --json`, then `foreman adopt <id> --session <sid> --pane <%N> --worktree <where it works>`. Nothing is launched.
+
 The cap on live workers comes from config; `foreman` refuses past it and ready items queue. Do not try to get round it by launching by hand.
 
 ## Acting on attention

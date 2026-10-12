@@ -133,6 +133,14 @@ def cmd_launch(args) -> int:
     return 0
 
 
+def cmd_adopt(args) -> int:
+    plan, d = _load(args)
+    wt = str(Path(args.worktree).expanduser().resolve()) if args.worktree else ""
+    print(engine.adopt(plan, d, world(), args.item, args.session, args.pane or "", wt,
+                       args.note or ""))
+    return 0
+
+
 def cmd_report(args) -> int:
     plan, d = _load(args)
     print(engine.report(plan, d, world(), args.item, args.state, args.line))
@@ -205,6 +213,15 @@ def build_parser() -> argparse.ArgumentParser:
                    help="resume a dead worker's own conversation in a new window")
     s.add_argument("--go", action="store_true", help="execute; without it, only print")
     s.set_defaults(func=cmd_launch)
+    s = sub.add_parser("adopt", help="take on a worker that was started by hand")
+    plan_arg(s)
+    s.add_argument("item")
+    s.add_argument("--session", required=True, help="the worker's claude session id "
+                   "(`session-coord board --repo <repo> --json` lists it)")
+    s.add_argument("--pane", help="its tmux pane, e.g. %%140")
+    s.add_argument("--worktree", help="where it works (default <repo>/.worktrees/<topic>)")
+    s.add_argument("--note")
+    s.set_defaults(func=cmd_adopt)
     s = sub.add_parser("report", help="a worker reports progress")
     plan_arg(s)
     s.add_argument("item")

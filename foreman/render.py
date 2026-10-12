@@ -33,6 +33,7 @@ def summary(plan: Plan, doc: dict[str, Any], cfg: Config, now: dt.datetime) -> d
     sts = graph.states(plan, doc)
     recs = doc.get("items", {})
     used, cap = engine.slots(plan, doc, cfg)
+    elsewhere = engine.busy_elsewhere(plan)
     attention: list[str] = []
     for iid in plan.items:
         r = recs.get(iid, {})
@@ -125,6 +126,7 @@ def summary(plan: Plan, doc: dict[str, Any], cfg: Config, now: dt.datetime) -> d
     counts = {s: sum(1 for v in sts.values() if v == s)
               for s in ("done", "running", "review", "ready", "blocked", "abandoned")}
     return {"plan": plan.name, "date": now.date().isoformat(), "workers": [used, cap],
+            "elsewhere": elsewhere,
             "counts": counts, "attention": attention, "active": active,
             "launchable": launch, "idle_workers": idle, "slots": max(cap - used, 0), "waiting": waiting,
             "blocked": blocked, "done": [i for i in plan.items if sts[i] == "done"],
@@ -134,7 +136,10 @@ def summary(plan: Plan, doc: dict[str, Any], cfg: Config, now: dt.datetime) -> d
 def board(plan: Plan, doc: dict[str, Any], cfg: Config, now: dt.datetime) -> str:
     s = summary(plan, doc, cfg, now)
     c = s["counts"]
-    head = (f"plan {s['plan']} {s['date']}  workers {s['workers'][0]}/{s['workers'][1]}  "
+    other = sum(s["elsewhere"].values())
+    split = (f" ({other} in {', '.join(f'{k} {v}' for k, v in s['elsewhere'].items())})"
+             if s["elsewhere"] else "")
+    head = (f"plan {s['plan']} {s['date']}  workers {s['workers'][0]}/{s['workers'][1]}{split}  "
             + " ".join(f"{k} {v}" for k, v in c.items() if v))
     out = [head]
     if s["attention"]:

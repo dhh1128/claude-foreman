@@ -395,16 +395,59 @@ def _escalate(plan: Plan, plan_dir: Path, doc: dict[str, Any], sts: dict[str, st
 
 # --- launch -------------------------------------------------------------------------------
 
-def slots(plan: Plan, doc: dict[str, Any], cfg: Config) -> tuple[int, int]:
-    """(live workers, cap). A worker known to be dead does not hold a slot; unknown does."""
-    sts = graph.states(plan, doc)
+def _busy(items: dict[str, Any], states: dict[str, str] | None = None) -> set[str]:
+    """Worker ids holding a slot. A worker known to be dead holds none; unknown does. One
+    worker carrying two items holds one slot."""
     busy = set()
-    for iid in plan.items:
-        rec = doc["items"].get(iid, {})
-        if (sts[iid] in graph.ACTIVE and (rec.get("session") or rec.get("pane") or rec.get("wid"))
+    for iid, rec in items.items():
+        st = states.get(iid) if states is not None else rec.get("state")
+        if (st in graph.ACTIVE and (rec.get("session") or rec.get("pane") or rec.get("wid"))
                 and rec.get("worker") != "dead"):
-            busy.add(rec.get("wid") or iid)  # one worker carrying two items holds one slot
-    return len(busy), cfg.cap(plan.max_workers)
+            busy.add(rec.get("wid") or iid)
+    return busy
+
+
+def busy_elsewhere(plan: Plan) -> dict[str, int]:
+    """Live workers in every OTHER plan under the state root, by plan name.
+
+    The cap is the machine's, so it has to be counted across plans. The first time two plans
+    ran at once, the second PM's board said 0 of 4 while the first had 4 live, and `launch
+    --ready --go` would have started four more (foreman-imbu, 2026-10-12). Other plans are read
+    from their state alone, so a plan file mid-edit elsewhere cannot break this one. A state
+    that cannot be read is counted as zero and named, never guessed at.
+    """
+    from . import config
+    here = plan.path.parent.resolve()
+    out: dict[str, int] = {}
+    root = config.plans_dir()
+    if not root.is_dir():
+        return out
+    for d in sorted(root.iterdir()):
+        try:
+            if d.resolve() == here or not (d / "plan.toml").exists():
+                continue
+            n = len(_busy(store.read(d).get("items", {})))
+        except (OSError, store.StoreError):
+            out[f"{d.name} (unreadable)"] = 0
+            continue
+        if n:
+            out[d.name] = n
+    return out
+
+
+def slots(plan: Plan, doc: dict[str, Any], cfg: Config) -> tuple[int, int]:
+    """(live workers counted against this plan's launches, the cap they are counted against).
+
+    Both are machine-wide: workers in other plans count. A plan's own `max_workers` can only
+    lower what this plan may run, so the cap returned is the tighter of the machine's and
+    (other plans' workers + this plan's own limit).
+    """
+    own = len(_busy(doc["items"], graph.states(plan, doc)))
+    others = sum(busy_elsewhere(plan).values())
+    cap = cfg.max_workers
+    if plan.max_workers:
+        cap = min(cap, others + plan.max_workers)
+    return own + others, cap
 
 
 def prepare(plan: Plan, plan_dir: Path, cfg: Config, world: World, ids: list[str],
@@ -467,7 +510,10 @@ def commit_launch(plan: Plan, plan_dir: Path, cfg: Config, world: World,
                   ln: launch_mod.Launch) -> dict[str, str]:
     """Execute one launch and record it. The cap is re-checked under the lock."""
     now = world.now()
-    with store.locked(plan_dir):
+    from . import config
+    # Two PMs launching at once could each see the last free slot. The machine lock makes the
+    # check-then-launch atomic across plans; the plan lock below still guards this plan's state.
+    with store.locked(config.home(), wait=120), store.locked(plan_dir):
         doc = store.read(plan_dir)
         used, cap = slots(plan, doc, cfg)
         if not ln.resume and used >= cap:

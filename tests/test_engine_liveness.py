@@ -88,7 +88,7 @@ def test_a_subagent_worker_is_unknown_and_holds_a_slot(tmp_path):
     engine.pulse(plan, tmp_path, Config(), engine.World(coord=FakeCoord(set()), now=lambda: T0))
     doc = store.read(tmp_path)
     assert doc["items"]["a"]["worker"] == "unknown"
-    assert engine.slots(plan, doc, Config()) == (1, 3)  # one worker, two items, one slot
+    assert engine.slots(plan, doc, Config())[0] == 1  # one worker, two items, one slot
 
 
 def test_an_adopted_worker_whose_pane_carries_its_session_id_is_live(setup):

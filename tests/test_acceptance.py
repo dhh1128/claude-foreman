@@ -586,3 +586,21 @@ def test_landing_an_item_tells_the_pm_whose_base_moved(w):
     w.foreman("adopt", "app-upstream", "--session", "s2")
     out = w.foreman("mark", "app-decisions", "done").stdout
     assert f"base moved for app-upstream in {w.repos / 'app'}" in out
+
+
+def test_the_cap_is_the_machines_and_counts_workers_in_every_plan(w):
+    """foreman-imbu's catch: plan B said 0/4 while plan A had 4 live."""
+    w.foreman("init", "second")
+    d2 = Path(os.environ["FOREMAN_HOME"]) / "plans" / "second"
+    (d2 / "plan.toml").write_text(
+        f'[items.b1]\ntitle="B1"\nkind="build"\nrepo="{w.repos / "relay"}"\noracle="manual"\n')
+    cap = {"FOREMAN_MAX_WORKERS": "2", "TMUX": ""}
+    w.foreman("adopt", "--plan", "roadmap", "app-decisions", "--session", "s1", env=cap)
+    w.foreman("adopt", "--plan", "roadmap", "app-upstream", "--session", "s2", env=cap)
+    b = json.loads(w.foreman("board", "--plan", "second", "--json", env=cap).stdout)
+    assert b["workers"] == [2, 2] and b["slots"] == 0 and b["elsewhere"] == {"roadmap": 2}
+    assert "workers 2/2 (2 in roadmap 2)" in w.foreman("board", "--plan", "second", env=cap).stdout
+    r = w.foreman("launch", "--plan", "second", "b1", env=cap, check=False)
+    assert r.returncode == 2 and "2 of 2 workers are live" in r.stderr
+    w.foreman("mark", "--plan", "roadmap", "app-upstream", "done", env=cap)
+    assert json.loads(w.foreman("board", "--plan", "second", "--json", env=cap).stdout)["slots"] == 1

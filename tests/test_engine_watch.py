@@ -33,8 +33,9 @@ def _setup(tmp_path):
     return plan
 
 
-def _world(t, ps, activity=None):
+def _world(t, ps, activity=None, panes=()):
     return engine.World(coord=NoCoord(), now=lambda: t, scan=lambda: ps,
+                        pane_pids=lambda: None if panes is None else list(panes),
                         pane_activity=lambda p: activity, pane_has_session=lambda p, s: True)
 
 
@@ -74,10 +75,31 @@ def test_a_quiet_pane_is_flagged_unless_the_worker_said_it_is_waiting(tmp_path):
 def test_reap_kills_only_what_no_live_worker_can_own(tmp_path):
     plan = _setup(tmp_path)
     ps = [Proc(901, 1, WT, 5, 7, "pytest", ""),
-          Proc(903, 1, "/x/.worktrees/old (deleted)", 5, 9, "pytest", "")]
+          Proc(903, 1, "/x/.worktrees/old (deleted)", 5, 9, "pytest", "")]  # orphaned, no pane
     killed = []
     lines = engine.reap(plan, tmp_path, Config(), _world(T0, ps), go=False)
     assert [l.split()[0] for l in lines] == ["leave", "would"]
     lines = engine.reap(plan, tmp_path, Config(), _world(T0, ps), go=True,
                         kill=lambda p: killed.append(p.pid) or f"{p.pid} terminated")
     assert killed == [903]
+
+
+def test_a_live_session_sitting_in_a_deleted_worktree_is_never_reaped(tmp_path):
+    """foreman1's catch: an interactive claude whose cwd is a removed worktree."""
+    plan = _setup(tmp_path)
+    gone = "/x/.worktrees/old (deleted)"
+    ps = [Proc(50, 1, "/", 1, 1, "tmux", "systemd"),               # the pane's shell's parent
+          Proc(60, 50, gone, 1, 2, "bash", "tmux"),                  # pane process
+          Proc(61, 60, gone, 1, 3, "claude --resume x", "bash"),     # live session in it
+          Proc(62, 61, gone, 1, 4, "pytest", "claude"),              # its child
+          Proc(70, 1, gone, 1, 5, "claude", ""),                     # a claude, even orphaned
+          Proc(80, 400, gone, 1, 6, "jshell", "codex"),              # not orphaned
+          Proc(90, 1, gone, 1, 7, "jshell", "")]                     # a true leftover
+    killed = []
+    engine.reap(plan, tmp_path, Config(), _world(T0, ps, panes=[60]), go=True,
+                kill=lambda p: killed.append(p.pid) or "killed")
+    assert killed == [90]
+    killed.clear()
+    lines = engine.reap(plan, tmp_path, Config(), _world(T0, ps, panes=None), go=True,
+                        kill=lambda p: killed.append(p.pid) or "killed")
+    assert killed == [] and all(l.startswith("leave") for l in lines)

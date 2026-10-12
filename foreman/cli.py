@@ -90,10 +90,25 @@ def _pane_activity(pane: str) -> float | None:
         return None
 
 
+def _pane_pids() -> list[int] | None:
+    try:
+        r = subprocess.run(["tmux", "list-panes", "-a", "-F", "#{pane_pid}"], capture_output=True,
+                           text=True, timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if r.returncode != 0:
+        # No server at all means no panes; any other failure means we could not look.
+        return [] if "no server running" in r.stderr else None
+    try:
+        return [int(x) for x in r.stdout.split()]
+    except ValueError:
+        return None
+
+
 def world() -> engine.World:
     from . import procs
     return engine.World(tmux_session=_tmux_session, pane_has_session=_pane_has_session,
-                        scan=procs.scan, pane_activity=_pane_activity)
+                        scan=procs.scan, pane_activity=_pane_activity, pane_pids=_pane_pids)
 
 
 def _load(args):

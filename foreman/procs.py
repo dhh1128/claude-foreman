@@ -17,10 +17,15 @@ What is checked, all without reading a transcript:
 Idleness alone is not a finding. A worker's own claude, its shell and its helpers sit in the
 worktree at 0% CPU whenever it waits, and flagging them would bury the real cases.
 
-foreman reports these. It kills only with `reap --go`, and by default only what cannot belong
-to a live worker: processes in a deleted directory, or under an item that is done or abandoned.
-Everything else is the worker's to clean up, because killing a test run a live worker is
-waiting on is worse than leaving it.
+foreman reports these. It kills only with `reap --go`, and only a process that is orphaned,
+outside every tmux pane, not a claude, and in a deleted directory or under an item that is done
+or abandoned. Everything else is the worker's to clean up, because killing a test run a live
+worker is waiting on is worse than leaving it.
+
+A deleted directory is not by itself a reason to kill. The first version treated it as one,
+and foreman1 caught it before it fired: a live interactive Claude session whose cwd was a
+removed worktree would have been killed (2026-10-12). Being in a pane, or being claude, now
+forbids reaping outright.
 
 Linux only (/proc). Elsewhere the scan answers None -- could not look -- and nothing is flagged.
 """
@@ -77,12 +82,39 @@ class Finding:
     reapable: bool      # true only when no live worker can be waiting on it
 
 
+def protected_pids(procs: Iterable[Proc], roots: Iterable[int]) -> set[int]:
+    """Every process at or below the given roots -- tmux pane processes -- plus every claude.
+    Nothing in this set is ever reaped."""
+    ps = list(procs)
+    kids: dict[int, list[int]] = {}
+    for p in ps:
+        kids.setdefault(p.ppid, []).append(p.pid)
+    out: set[int] = set()
+    todo = list(roots)
+    while todo:
+        pid = todo.pop()
+        if pid in out:
+            continue
+        out.add(pid)
+        todo.extend(kids.get(pid, []))
+    out.update(p.pid for p in ps if is_claude(p))
+    return out
+
+
+def is_claude(p: Proc) -> bool:
+    first = p.cmd.split(" ", 1)[0] if p.cmd else ""
+    return first.rsplit("/", 1)[-1] == "claude"
+
+
 def analyse(procs: Iterable[Proc], trees: Mapping[str, tuple[str, str]],
             previous: Mapping[str, dict], now: float, idle_minutes: float,
-            own_pids: Iterable[int] = ()) -> list[Finding]:
+            own_pids: Iterable[int] = (), protected: Iterable[int] | None = None) -> list[Finding]:
+    """`protected` is `protected_pids(...)`; None means the panes could not be listed, and then
+    nothing is reapable at all."""
     """`trees` maps a worktree path to (item, item state). `previous` is the last pulse's
     {key: {"cpu": int, "since": epoch}} record of CPU time, so idleness spans pulses."""
     skip = set(own_pids)
+    guard = set(protected) if protected is not None else None
     out = []
     for p in procs:
         if p.pid in skip:
@@ -103,7 +135,8 @@ def analyse(procs: Iterable[Proc], trees: Mapping[str, tuple[str, str]],
         if prev and prev.get("cpu") == p.cpu and now - prev.get("since", now) >= idle_minutes * 60:
             why.append(f"idle {int((now - prev['since']) // 60)}m")
         item, st = owner if owner else ("", "")
-        reapable = p.deleted or st in ("done", "abandoned")
+        reapable = (guard is not None and p.pid not in guard and p.orphan and not is_claude(p)
+                    and (p.deleted or st in ("done", "abandoned")))
         out.append(Finding(p, item, tuple(why), reapable))
     return out
 

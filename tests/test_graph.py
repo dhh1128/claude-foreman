@@ -112,3 +112,17 @@ def test_contention_waits_until_two_items_are_in_review():
     assert graph.contention(p, graph.states(p, _doc(ext="done", a="review", c="running"))) == {}
     s = graph.states(p, _doc(ext="done", a="review", c="review"))
     assert graph.contention(p, s) == {"/r/one": ["a", "c"]}
+
+
+def test_an_item_that_touches_a_second_repo_contends_there_too():
+    body = BODY.replace('[items.c]\n', '[items.c]\ntouches = ["/r/two"]\n') + '''
+[items.e]
+title = "E"
+kind = "build"
+repo = "/r/two"
+oracle = "manual"
+'''
+    p = parse(body, Path("/p/plan.toml"))
+    assert p.items["c"].repos == ("/r/one", "/r/two")
+    s = graph.states(p, _doc(ext="done", c="review", e="review"))
+    assert graph.contention(p, s) == {"/r/two": ["c", "e"]}

@@ -50,6 +50,9 @@ class World:
     scan: Callable[[], "list[procs_mod.Proc] | None"] = lambda: None
     #: A pane's last activity as epoch seconds, or None when tmux cannot say.
     pane_activity: Callable[[str], "float | None"] = lambda pane: None
+    #: The pid of every tmux pane's process, or None when tmux cannot be asked. Anything under
+    #: a pane is somebody's live session and is never reaped.
+    pane_pids: Callable[[], "list[int] | None"] = lambda: None
 
 
 class EngineError(RuntimeError):
@@ -202,13 +205,19 @@ def _liveness(rec: dict[str, Any], live: set[str] | None, world: World, now: dt.
 
 def _ripple(plan: Plan, doc: dict[str, Any], iid: str) -> str:
     """When an item lands, the other items in flight in its repo have a moved base."""
-    repo = plan.items[iid].repo.rstrip("/")
-    if not repo:
+    mine = set(plan.items[iid].repos)
+    if not mine:
         return ""
     sts = graph.states(plan, doc)
-    others = [o for o, it in plan.items.items()
-              if o != iid and it.repo.rstrip("/") == repo and sts[o] in graph.ACTIVE]
-    return f"; base moved for {', '.join(others)} in {repo}" if others else ""
+    hit = {}
+    for o, it in plan.items.items():
+        shared = mine & set(it.repos)
+        if o != iid and shared and sts[o] in graph.ACTIVE:
+            hit[o] = sorted(shared)
+    if not hit:
+        return ""
+    where = sorted({r for rs in hit.values() for r in rs})
+    return f"; base moved for {', '.join(hit)} in {', '.join(where)}"
 
 
 def _pins(plan: Plan, plan_dir: Path, doc: dict[str, Any], values: dict[str, str | None],
@@ -271,8 +280,10 @@ def _leftovers(plan: Plan, doc: dict[str, Any], sts: dict[str, str], cfg: Config
         return []  # could not look; keep the last findings rather than clearing them
     t = trees(plan, doc, sts)
     epoch = now.timestamp()
+    roots = world.pane_pids()
     found = procs_mod.analyse(ps, t, doc.get("procs", {}), epoch, cfg.idle_minutes,
-                              own_pids=(os.getpid(),))
+                              own_pids=(os.getpid(),),
+                              protected=None if roots is None else procs_mod.protected_pids(ps, roots))
     doc["procs"] = procs_mod.next_cpu_record(ps, doc.get("procs", {}), epoch, t)
     before = {f["key"] for f in doc.get("leftovers", [])}
     doc["leftovers"] = [{"key": f.proc.key, "pid": f.proc.pid, "item": f.item,
@@ -669,14 +680,18 @@ def reap(plan: Plan, plan_dir: Path, cfg: Config, world: World, go: bool,
         raise EngineError("the process table cannot be read here (no /proc); nothing to reap.")
     doc = store.read(plan_dir)
     sts = graph.states(plan, doc)
+    roots = world.pane_pids()
     found = procs_mod.analyse(ps, trees(plan, doc, sts), doc.get("procs", {}),
-                              world.now().timestamp(), cfg.idle_minutes, own_pids=(os.getpid(),))
+                              world.now().timestamp(), cfg.idle_minutes, own_pids=(os.getpid(),),
+                              protected=None if roots is None else procs_mod.protected_pids(ps, roots))
     out = []
     for f in found:
         line = (f"pid {f.proc.pid} [{f.item or 'no item'}] {', '.join(f.why)}: "
                 f"{f.proc.cmd[:80]}  (cwd {f.proc.cwd})")
         if not f.reapable:
-            out.append(f"leave  {line} -- a live worker may own it; tell the worker")
+            why = ("tmux could not be asked which processes are live sessions" if roots is None
+                   else "it is live, in a pane, or not orphaned; tell whoever owns it")
+            out.append(f"leave  {line} -- {why}")
         elif go:
             out.append(f"{kill(f.proc)}  {line}")
         else:

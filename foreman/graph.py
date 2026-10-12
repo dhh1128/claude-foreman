@@ -152,5 +152,6 @@ def contention(plan: Plan, sts: Mapping[str, str]) -> dict[str, list[str]]:
     by_repo: dict[str, list[str]] = {}
     for iid, it in plan.items.items():
         if it.kind == "build" and sts[iid] == "review":
-            by_repo.setdefault(it.repo.rstrip("/"), []).append(iid)
+            for r in it.repos:
+                by_repo.setdefault(r, []).append(iid)
     return {r: ids for r, ids in by_repo.items() if len(ids) > 1}

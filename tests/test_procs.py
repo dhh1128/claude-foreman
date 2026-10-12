@@ -37,13 +37,15 @@ def test_a_quiet_process_that_is_not_orphaned_is_not_a_finding():
 
 def test_deleted_worktrees_are_reapable_even_when_no_plan_owns_them():
     ps = [P(5, "/x/.worktrees/gone (deleted)", ppid=1), P(6, "/tmp/gone (deleted)", ppid=1)]
-    (f,) = procs.analyse(ps, TREES, {}, 0.0, 30)
+    (f,) = procs.analyse(ps, TREES, {}, 0.0, 30, protected=set())
     assert f.proc.pid == 5 and f.item == "" and f.reapable
+    (f,) = procs.analyse(ps, TREES, {}, 0.0, 30)  # panes unknown: nothing is reapable
+    assert not f.reapable
     assert f.why == ("its directory was deleted",)
 
 
 def test_orphans_of_a_finished_item_are_reapable():
-    (f,) = procs.analyse([P(7, "/r/.worktrees/b", ppid=1)], TREES, {}, 0.0, 30)
+    (f,) = procs.analyse([P(7, "/r/.worktrees/b", ppid=1)], TREES, {}, 0.0, 30, protected=set())
     assert f.item == "b" and f.reapable
 
 
@@ -69,7 +71,7 @@ def test_scan_sees_a_real_orphan_and_its_deleted_directory(tmp_path):
     os.rmdir(wt)
     (p,) = [p for p in procs.scan() if p.pid == mine[0].pid]
     assert p.deleted and p.path == str(wt)
-    (f,) = [f for f in procs.analyse([p], {}, {}, 0.0, 30)]
+    (f,) = [f for f in procs.analyse([p], {}, {}, 0.0, 30, protected=set())]
     assert f.reapable
     assert procs.kill(p, grace=2.0) in (f"{p.pid} terminated", f"{p.pid} killed")
     assert p.pid not in {q.pid for q in procs.scan()}

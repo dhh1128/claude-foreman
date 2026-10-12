@@ -53,6 +53,13 @@ class Item:
     base: str = ""           # branch to start the worktree from; default origin's HEAD
     engine: str = "claude"   # what `launch` starts: a key of config `engines`
     rests_on: tuple[str, ...] = ()   # pins whose movement makes this item's evidence stale
+    #: Other repos this item's work lands in. `repo` is where its worker starts; a change that
+    #: spans a test suite and a library touches both, and merges queue in each.
+    touches: tuple[str, ...] = ()
+
+    @property
+    def repos(self) -> tuple[str, ...]:
+        return tuple(r.rstrip("/") for r in (self.repo, *self.touches) if r)
 
 
 @dataclass(frozen=True)
@@ -150,7 +157,7 @@ def parse(text: str, path: Path, name: str | None = None) -> Plan:
     plan_due = _date(meta.get("due"), f"{path} [plan]")
     items: dict[str, Item] = {}
     allowed = {"title", "kind", "repo", "topic", "depends_on", "oracle", "brief", "question",
-               "due", "estimate", "state", "ref", "base", "engine", "rests_on"}
+               "due", "estimate", "state", "ref", "base", "engine", "rests_on", "touches"}
     for iid, d in raw_items.items():
         where = f"item {iid!r}"
         if not ID_RE.match(iid):
@@ -196,6 +203,7 @@ def parse(text: str, path: Path, name: str | None = None) -> Plan:
             base=str(d.get("base", "")).strip(),
             engine=str(d.get("engine", "claude")).strip() or "claude",
             rests_on=_strs(d.get("rests_on"), where, "rests_on"),
+            touches=tuple(_path(t, base) for t in _strs(d.get("touches"), where, "touches")),
         )
 
     mw = meta.get("max_workers")

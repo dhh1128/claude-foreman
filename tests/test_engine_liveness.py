@@ -89,3 +89,15 @@ def test_a_subagent_worker_is_unknown_and_holds_a_slot(tmp_path):
     doc = store.read(tmp_path)
     assert doc["items"]["a"]["worker"] == "unknown"
     assert engine.slots(plan, doc, Config()) == (1, 3)  # one worker, two items, one slot
+
+
+def test_an_adopted_worker_whose_pane_carries_its_session_id_is_live(setup):
+    """foreman1's G14/G17/G18: hand-run launches, adopted, claude as the pane process itself,
+    invisible to session-coord. The id in the pane's argv is positive proof."""
+    plan, d = setup
+    with store.transaction(d) as doc:
+        doc["items"]["a"].pop("ours")
+    w = engine.World(coord=FakeCoord(set()), now=lambda: T0 + dt.timedelta(hours=1),
+                     pane_has_session=lambda p, s: s == "sid-1")
+    engine.pulse(plan, d, Config(), w)
+    assert store.read(d)["items"]["a"]["worker"] == "live"

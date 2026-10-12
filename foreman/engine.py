@@ -177,8 +177,19 @@ def _liveness(rec: dict[str, Any], live: set[str] | None, world: World, now: dt.
     sid, pane = rec.get("session", ""), rec.get("pane", "")
     if not sid and not pane:
         return "unknown"
-    token = (rec.get("token") or sid) if rec.get("ours") else ("" if not sid else None)
-    in_pane = world.pane_has_session(pane, token) if pane and token is not None else None
+    if not pane:
+        in_pane = None
+    elif rec.get("ours"):
+        # foreman put the token in the argv, so its absence is evidence too.
+        in_pane = world.pane_has_session(pane, rec.get("token") or sid)
+    elif sid:
+        # Someone else started it. Finding the session id in the pane's process tree proves it
+        # live; not finding it proves nothing, because a hand-started claude's argv need not
+        # carry its id. (Regression of 2026-10-12: three adopted workers whose pane process IS
+        # claude were marked gone when this case was left out.)
+        in_pane = True if world.pane_has_session(pane, sid) else None
+    else:
+        in_pane = world.pane_has_session(pane, "")  # a window with no id: does the pane exist?
     if (sid and live is not None and sid in live) or in_pane:
         return "live"
     if in_pane is None and (not sid or live is None):

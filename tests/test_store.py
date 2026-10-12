@@ -4,7 +4,7 @@ import os
 
 import pytest
 
-from foreman import store
+from zamu import store
 
 
 def test_missing_state_is_empty(tmp_path):

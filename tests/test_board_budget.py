@@ -5,9 +5,9 @@ from __future__ import annotations
 import datetime as dt
 from pathlib import Path
 
-from foreman import render
-from foreman.config import Config
-from foreman.plan import parse
+from zamu import render
+from zamu.config import Config
+from zamu.plan import parse
 
 
 def test_a_twenty_item_plan_board_stays_within_a_few_hundred_tokens():

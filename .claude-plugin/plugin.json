@@ -1,9 +1,9 @@
 {
-  "name": "foreman",
+  "name": "zamu",
   "description": "A project manager for a cross-repo plan of work: hold the dependency graph on disk, launch a worker Claude session for each item whose dependencies are done, watch the workers through session-coord, check exit conditions itself, and route every decision to the human through one queue. Never does the work.",
   "author": { "name": "Daniel Hardman", "url": "https://github.com/dhh1128" },
-  "homepage": "https://github.com/dhh1128/claude-foreman",
-  "repository": "https://github.com/dhh1128/claude-foreman",
+  "homepage": "https://github.com/dhh1128/claude-zamu",
+  "repository": "https://github.com/dhh1128/claude-zamu",
   "license": "Apache-2.0",
   "keywords": ["project-management", "multi-session", "orchestration", "planning"]
 }

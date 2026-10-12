@@ -7,8 +7,8 @@ import time
 
 import pytest
 
-from foreman import procs
-from foreman.procs import Proc
+from zamu import procs
+from zamu.procs import Proc
 
 WT = "/r/.worktrees/a"
 TREES = {WT: ("a", "running"), "/r/.worktrees/b": ("b", "done")}

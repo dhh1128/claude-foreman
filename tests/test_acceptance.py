@@ -1,5 +1,5 @@
 """The handoff's acceptance test: a fixture plan drawn from a real cross-repo roadmap, driven
-through the real `foreman` command in a fresh process per call, against temp git repos and
+through the real `zamu` command in a fresh process per call, against temp git repos and
 fake session-coord / tmux / gh executables.
 
 Each test is one of the seven demonstrations the handoff asked for, named after it.
@@ -100,8 +100,8 @@ def w(tmp_path):
     world = World(tmp_path)
     for name in ("core", "app", "ext", "relay"):
         make_repo(tmp_path, name)
-    world.foreman("init", "roadmap")
-    d = Path(world.env.get("FOREMAN_HOME", os.environ["FOREMAN_HOME"])) / "plans" / "roadmap"
+    world.zamu("init", "roadmap")
+    d = Path(world.env.get("ZAMU_HOME", os.environ["ZAMU_HOME"])) / "plans" / "roadmap"
     (d / "plan.toml").write_text(PLAN.format(sig=world.signals, repos=tmp_path / "repos"))
     for b in ("common", "core-lib", "app-lib"):
         (d / "briefs" / f"{b}.md").write_text(f"brief {b}\n")
@@ -111,7 +111,7 @@ def w(tmp_path):
 
 
 def board(w, **kw):
-    return json.loads(w.foreman("board", "--json", **kw).stdout)
+    return json.loads(w.zamu("board", "--json", **kw).stdout)
 
 
 # 1 -------------------------------------------------------------------------------------------
@@ -121,11 +121,11 @@ def test_1_ready_set_is_correct_and_updates_when_the_oracle_flips(w):
     assert b["states"]["core-lib"] == "blocked"
     assert b["states"]["app-lib"] == "blocked"
 
-    w.foreman("pulse")
+    w.zamu("pulse")
     assert board(w)["launchable"] == ["app-decisions"]  # nothing flipped yet
 
     w.signal("lib-0.10.0")
-    out = w.foreman("pulse").stdout
+    out = w.zamu("pulse").stdout
     assert "* lib-rel done" in out
     b = board(w)
     assert b["states"]["lib-rel"] == "done"
@@ -135,10 +135,10 @@ def test_1_ready_set_is_correct_and_updates_when_the_oracle_flips(w):
 
 def test_1b_a_pr_oracle_flips_only_when_every_listed_pr_is_merged(w):
     (w.fake / "merged.txt").write_text("upstream/lib#1576\n")
-    w.foreman("pulse")
+    w.zamu("pulse")
     assert board(w)["states"]["upstream-prs"] == "ready"
     (w.fake / "merged.txt").write_text("upstream/lib#1576\nupstream/lib#1577\n")
-    w.foreman("pulse")
+    w.zamu("pulse")
     b = board(w)
     assert b["states"]["upstream-prs"] == "done"
     assert "app-upstream" in b["launchable"]
@@ -150,36 +150,36 @@ def test_2_cycles_and_dangling_dependencies_are_refused_at_load(w):
     good = p.read_text()
     p.write_text(good.replace('depends_on = ["lib-rel"]\noracle = "pr:acme/core#12"',
                               'depends_on = ["lib-rel", "ext-lib"]\noracle = "pr:acme/core#12"'))
-    r = w.foreman("check", check=False)
+    r = w.zamu("check", check=False)
     assert r.returncode == 2
     assert "cycle: app-lib -> core-lib -> ext-lib -> app-lib" in r.stderr
     # Every verb refuses, not only `check`: a PM must not act on a plan it cannot trust.
-    assert w.foreman("pulse", check=False).returncode == 2
-    assert w.foreman("launch", "--ready", check=False).returncode == 2
+    assert w.zamu("pulse", check=False).returncode == 2
+    assert w.zamu("launch", "--ready", check=False).returncode == 2
 
     p.write_text(good.replace('depends_on = ["app-decisions"]', 'depends_on = ["decisions"]'))
-    r = w.foreman("check", check=False)
+    r = w.zamu("check", check=False)
     assert r.returncode == 2
     assert "'app-feature' depends on 'decisions', which is not in the plan" in r.stderr
 
     p.write_text(good)
-    assert w.foreman("check").returncode == 0
+    assert w.zamu("check").returncode == 0
 
 
 # 3 -------------------------------------------------------------------------------------------
 def test_3_dry_run_prints_the_worktree_and_tmux_command_and_executes_nothing(w):
     w.signal("lib-0.10.0")
-    w.foreman("pulse")
-    out = w.foreman("launch", "core-lib", env={"TMUX": ""}).stdout
+    w.zamu("pulse")
+    out = w.zamu("launch", "core-lib", env={"TMUX": ""}).stdout
     core = w.repos / "core"
     wt = f"{core}/.worktrees/core-lib"
     assert f"git -C {core} fetch origin main" in out
     assert f"git -C {core} worktree add {wt} -b core-lib origin/main" in out
     line = next(l for l in out.splitlines() if l.startswith("tmux new-window"))
     sid = line.split("--session-id ")[1].split()[0]
-    assert f"-n core-lib -c {wt} {WRAP} foreman-worker:{sid} claude --session-id {sid} " in line
+    assert f"-n core-lib -c {wt} {WRAP} zamu-worker:{sid} claude --session-id {sid} " in line
     assert "briefs/common.md then " in line and "briefs/core-lib.md" in line
-    assert "foreman report --plan roadmap core-lib" in line
+    assert "zamu report --plan roadmap core-lib" in line
     assert "dry run: nothing was executed" in out
     assert not Path(wt).exists()
     assert w.calls("tmux") == []
@@ -187,7 +187,7 @@ def test_3_dry_run_prints_the_worktree_and_tmux_command_and_executes_nothing(w):
 
 
 def test_3b_go_creates_the_worktree_opens_the_window_and_records_the_worker(w):
-    out = w.foreman("launch", "app-decisions", "--go", env={"TMUX": ""}).stdout
+    out = w.zamu("launch", "app-decisions", "--go", env={"TMUX": ""}).stdout
     wt = w.repos / "app" / ".worktrees" / "app-decisions"
     assert wt.is_dir()
     branch = subprocess.run(["git", "-C", str(wt), "branch", "--show-current"],
@@ -203,24 +203,24 @@ def test_3b_go_creates_the_worktree_opens_the_window_and_records_the_worker(w):
 # 4 -------------------------------------------------------------------------------------------
 def test_4_the_concurrency_cap_holds(w):
     w.signal("lib-0.10.0")
-    w.foreman("pulse")
-    cap = {"FOREMAN_MAX_WORKERS": "2", "TMUX": ""}
-    out = w.foreman("launch", "--ready", "--go", env=cap).stdout
+    w.zamu("pulse")
+    cap = {"ZAMU_MAX_WORKERS": "2", "TMUX": ""}
+    out = w.zamu("launch", "--ready", "--go", env=cap).stdout
     assert out.count("# launched ") == 2
     b = board(w, env=cap)
     assert b["workers"] == [2, 2]
     assert b["slots"] == 0
     assert len(b["launchable"]) == 1  # the third ready item queues
 
-    r = w.foreman("launch", b["launchable"][0], env=cap, check=False)
+    r = w.zamu("launch", b["launchable"][0], env=cap, check=False)
     assert r.returncode == 2 and "2 of 2 workers are live" in r.stderr
-    assert "nothing to launch" in w.foreman("launch", "--ready", env=cap).stdout
+    assert "nothing to launch" in w.zamu("launch", "--ready", env=cap).stdout
     assert len(w.calls("tmux")) == 2
 
     # A worker that finishes frees its slot.
     first = next(i for i in ("core-lib", "relay-lib", "app-decisions")
                  if b["states"][i] == "running")
-    w.foreman("mark", first, "done", "--note", "test")
+    w.zamu("mark", first, "done", "--note", "test")
     assert board(w, env=cap)["slots"] == 1
 
 
@@ -229,15 +229,15 @@ def test_4b_a_plan_can_lower_the_machine_cap_but_not_raise_it(w):
     p.write_text(p.read_text().replace('name = "roadmap"', 'name = "roadmap"\nmax_workers = 1'))
     assert board(w)["workers"] == [0, 1]
     p.write_text(p.read_text().replace("max_workers = 1", "max_workers = 9"))
-    assert board(w, env={"FOREMAN_MAX_WORKERS": "2"})["workers"] == [0, 2]
+    assert board(w, env={"ZAMU_MAX_WORKERS": "2"})["workers"] == [0, 2]
 
 
 # 5 -------------------------------------------------------------------------------------------
 def test_5_killing_the_pm_mid_run_and_starting_a_new_one_loses_nothing(w):
     w.signal("lib-0.10.0")
-    w.foreman("pulse")
-    w.foreman("launch", "core-lib", "--go", env={"TMUX": ""})
-    w.foreman("report", "core-lib", "review", "PR acme/core#12 open")
+    w.zamu("pulse")
+    w.zamu("launch", "core-lib", "--go", env={"TMUX": ""})
+    w.zamu("report", "core-lib", "review", "PR acme/core#12 open")
     before = board(w)
     state_before = (w.plan_dir / "state.json").read_bytes()
 
@@ -263,23 +263,23 @@ def test_5_killing_the_pm_mid_run_and_starting_a_new_one_loses_nothing(w):
     p.write_text(p.read_text().replace('oracle = "cmd:sleep 30"',
                                        'oracle = "file:{}/ext-lib"'.format(w.signals)))
     (w.fake / "merged.txt").write_text("acme/core#12\n")
-    w.foreman("pulse")
+    w.zamu("pulse")
     assert board(w)["states"]["core-lib"] == "done"
     assert board(w)["states"]["app-lib"] == "ready"
 
 
 # 6 -------------------------------------------------------------------------------------------
 def test_6_a_worker_report_updates_the_board(w):
-    w.foreman("launch", "app-decisions", "--go", env={"TMUX": ""})
-    w.foreman("report", "app-decisions", "running", "drafted three of five decision nodes")
-    out = w.foreman("board").stdout
+    w.zamu("launch", "app-decisions", "--go", env={"TMUX": ""})
+    w.zamu("report", "app-decisions", "running", "drafted three of five decision nodes")
+    out = w.zamu("board").stdout
     assert 'app-decisions running' in out and "drafted three of five" in out
 
-    w.foreman("report", "app-decisions", "stuck", "need the user's ruling on node 4")
-    assert "app-decisions: stuck" in w.foreman("board").stdout
+    w.zamu("report", "app-decisions", "stuck", "need the user's ruling on node 4")
+    assert "app-decisions: stuck" in w.zamu("board").stdout
 
     # "done" is a claim. The oracle has not flipped, so the item is held in review.
-    r = w.foreman("report", "app-decisions", "done", "all five committed").stdout
+    r = w.zamu("report", "app-decisions", "done", "all five committed").stdout
     assert "held in review" in r
     b = board(w)
     assert b["states"]["app-decisions"] == "review"
@@ -287,17 +287,17 @@ def test_6_a_worker_report_updates_the_board(w):
     assert "app-feature" not in b["launchable"]
 
     w.signal("decisions")
-    w.foreman("report", "app-decisions", "done", "all five committed")
+    w.zamu("report", "app-decisions", "done", "all five committed")
     b = board(w)
     assert b["states"]["app-decisions"] == "done"
     assert "app-feature" in b["launchable"]
 
 
 def test_6b_reports_wake_an_attached_pm_through_session_coord(w):
-    w.foreman("attach", "--repo", str(w.repos / "app"), "--target", "pm-roadmap")
-    w.foreman("report", "app-decisions", "running", "milestone one")
+    w.zamu("attach", "--repo", str(w.repos / "app"), "--target", "pm-roadmap")
+    w.zamu("report", "app-decisions", "running", "milestone one")
     assert not (w.fake / "msgs.txt").exists()  # milestones do not ring
-    w.foreman("report", "app-decisions", "review", "PR #3 open")
+    w.zamu("report", "app-decisions", "review", "PR #3 open")
     (m,) = [json.loads(x) for x in (w.fake / "msgs.txt").read_text().splitlines()]
     assert m[:4] == ["msg", "--repo", str(w.repos / "app"), "pm-roadmap"]
     assert "app-decisions review" in m[4]
@@ -305,9 +305,9 @@ def test_6b_reports_wake_an_attached_pm_through_session_coord(w):
 
 # 7 -------------------------------------------------------------------------------------------
 def test_7_a_decision_item_produces_exactly_one_ask_and_never_a_launch(w):
-    w.foreman("pulse")
-    w.foreman("pulse")
-    w.foreman("pulse")  # three fresh processes: three PM wakes, or a PM restarted twice
+    w.zamu("pulse")
+    w.zamu("pulse")
+    w.zamu("pulse")  # three fresh processes: three PM wakes, or a PM restarted twice
     asks = [c for c in w.calls("session-coord") if c[:2] == ["ask", "add"]]
     assert len(asks) == 1
     a = asks[0]
@@ -318,18 +318,18 @@ def test_7_a_decision_item_produces_exactly_one_ask_and_never_a_launch(w):
     assert b["states"]["trust-posture"] == "ready"
     assert any(x.startswith("trust-posture (decision, asked Q-") for x in b["waiting"])
 
-    r = w.foreman("launch", "trust-posture", check=False)
+    r = w.zamu("launch", "trust-posture", check=False)
     assert r.returncode == 2 and "decision item" in r.stderr
     assert "trust-posture" not in b["launchable"]
-    w.foreman("launch", "--ready", "--go", env={"TMUX": ""})
+    w.zamu("launch", "--ready", "--go", env={"TMUX": ""})
     assert all("trust-posture" not in json.dumps(c) for c in w.calls("tmux"))
 
 
 def test_7b_losing_the_state_record_does_not_file_twice(w):
     """If state.json is lost after an ask was filed, the stable tag makes the refile a no-op."""
-    w.foreman("pulse")
+    w.zamu("pulse")
     (w.plan_dir / "state.json").unlink()
-    out = w.foreman("pulse").stdout
+    out = w.zamu("pulse").stdout
     assert "escalated" in out
     assert len(w.asks()) == 1
     assert "was already filed" in (w.plan_dir / "events.jsonl").read_text()
@@ -337,47 +337,47 @@ def test_7b_losing_the_state_record_does_not_file_twice(w):
 
 # Beyond the seven -----------------------------------------------------------------------------
 def test_dead_worker_is_detected_from_session_coord_and_can_be_relaunched(w):
-    cfg = Path(os.environ["FOREMAN_CONFIG"])
+    cfg = Path(os.environ["ZAMU_CONFIG"])
     cfg.write_text("launch_grace_minutes = 0\n")
-    w.foreman("launch", "app-decisions", "--go", env={"TMUX": ""})
+    w.zamu("launch", "app-decisions", "--go", env={"TMUX": ""})
     sid = json.loads((w.plan_dir / "state.json").read_text())["items"]["app-decisions"]["session"]
 
     w.set_board([sid])
-    w.foreman("pulse")
-    assert "app-decisions running live" in w.foreman("board").stdout
+    w.zamu("pulse")
+    assert "app-decisions running live" in w.zamu("board").stdout
 
     w.set_board([])
-    out = w.foreman("pulse").stdout
+    out = w.zamu("pulse").stdout
     assert "app-decisions worker gone" in out
     assert board(w)["workers"] == [0, 3]  # a dead worker holds no slot
 
     (w.fake / "board.json").write_text("not json")  # session-coord could not be read
-    w.foreman("pulse")
-    assert "running unknown" in w.foreman("board").stdout
+    w.zamu("pulse")
+    assert "running unknown" in w.zamu("board").stdout
 
     w.set_board([])
-    w.foreman("pulse")
-    out = w.foreman("launch", "--relaunch", "app-decisions", "--go", env={"TMUX": ""}).stdout
+    w.zamu("pulse")
+    out = w.zamu("launch", "--relaunch", "app-decisions", "--go", env={"TMUX": ""}).stdout
     call = w.calls("tmux")[-1]
     assert call[call.index("--resume") + 1] == sid
     assert "git" not in out.split("# launched")[0].split("\n", 1)[1]  # worktree reused
 
 
 def test_a_relaunch_of_a_live_worker_is_refused(w):
-    w.foreman("launch", "app-decisions", "--go", env={"TMUX": ""})
-    r = w.foreman("launch", "--relaunch", "app-decisions", check=False)
+    w.zamu("launch", "app-decisions", "--go", env={"TMUX": ""})
+    r = w.zamu("launch", "--relaunch", "app-decisions", check=False)
     assert r.returncode == 2 and "second worker" in r.stderr
 
 
 def test_merge_contention_is_on_the_board(w):
-    w.foreman("adopt", "app-decisions", "--session", "s1")
-    w.foreman("report", "app-decisions", "review", "PR #1")
-    assert "merges queue" not in w.foreman("board").stdout
+    w.zamu("adopt", "app-decisions", "--session", "s1")
+    w.zamu("report", "app-decisions", "review", "PR #1")
+    assert "merges queue" not in w.zamu("board").stdout
     (w.fake / "merged.txt").write_text("upstream/lib#1576\nupstream/lib#1577\n")
-    w.foreman("pulse")
-    w.foreman("adopt", "app-upstream", "--session", "s2")
-    w.foreman("report", "app-upstream", "review", "PR #2")
-    out = w.foreman("board").stdout
+    w.zamu("pulse")
+    w.zamu("adopt", "app-upstream", "--session", "s2")
+    w.zamu("report", "app-upstream", "review", "PR #2")
+    out = w.zamu("board").stdout
     assert f"merges queue in {w.repos / 'app'}: app-decisions, app-upstream" in out
 
 
@@ -385,7 +385,7 @@ def test_deadlines_flag_a_chain_that_cannot_finish(w):
     p = w.plan_dir / "plan.toml"
     t = p.read_text().replace('name = "roadmap"', 'name = "roadmap"\ndue = 2000-01-01')
     p.write_text(t)
-    out = w.foreman("board").stdout
+    out = w.zamu("board").stdout
     assert "ext-lib: overdue (due 2000-01-01" in out
 
 
@@ -393,78 +393,78 @@ def test_a_worker_started_by_hand_can_be_adopted(w):
     """The first real plan began with one worker the human had already started himself."""
     core = w.repos / "core"
     w.set_board(["hand-started-1"])
-    out = w.foreman("adopt", "app-decisions", "--session", "hand-started-1", "--pane", "%7",
+    out = w.zamu("adopt", "app-decisions", "--session", "hand-started-1", "--pane", "%7",
                     "--worktree", str(w.repos / "app")).stdout
     assert "adopted" in out
-    w.foreman("pulse")
+    w.zamu("pulse")
     b = board(w)
     assert b["states"]["app-decisions"] == "running"
     assert b["workers"] == [1, 3]
-    assert "app-decisions running live" in w.foreman("board").stdout
+    assert "app-decisions running live" in w.zamu("board").stdout
     assert not [c for c in w.calls("tmux") if c[0] == "new-window"]  # adoption launches nothing
 
     # Its reports count like any worker's.
-    w.foreman("report", "app-decisions", "review", "PR #3 open")
+    w.zamu("report", "app-decisions", "review", "PR #3 open")
     assert board(w)["states"]["app-decisions"] == "review"
 
     # Refused: an item that is not a build item, or one that already has a live worker.
-    r = w.foreman("adopt", "trust-posture", "--session", "x", check=False)
+    r = w.zamu("adopt", "trust-posture", "--session", "x", check=False)
     assert r.returncode == 2 and "decision item" in r.stderr
-    r = w.foreman("adopt", "app-decisions", "--session", "other", check=False)
+    r = w.zamu("adopt", "app-decisions", "--session", "other", check=False)
     assert r.returncode == 2 and "already has a worker" in r.stderr
 
 
 def test_relaunching_an_adopted_worker_reuses_its_recorded_tree(w):
-    cfg = Path(os.environ["FOREMAN_CONFIG"])
+    cfg = Path(os.environ["ZAMU_CONFIG"])
     cfg.write_text("launch_grace_minutes = 0\n")
     app = w.repos / "app"
-    w.foreman("adopt", "app-decisions", "--session", "hand-1", "--worktree", str(app))
+    w.zamu("adopt", "app-decisions", "--session", "hand-1", "--worktree", str(app))
     w.set_board([])
-    w.foreman("pulse")
-    out = w.foreman("launch", "--relaunch", "app-decisions").stdout
+    w.zamu("pulse")
+    out = w.zamu("launch", "--relaunch", "app-decisions").stdout
     assert "worktree add" not in out
     line = next(l for l in out.splitlines() if l.startswith("tmux new-window"))
-    assert f"-c {app} {WRAP} foreman-worker:hand-1 claude --resume hand-1" in line
+    assert f"-c {app} {WRAP} zamu-worker:hand-1 claude --resume hand-1" in line
 
 
 def test_launch_runs_claude_under_a_shell_so_session_coord_can_find_it(w):
     """session-coord looks for a pane's claude among the pane process's descendants."""
-    w.foreman("launch", "app-decisions", "--go", env={"TMUX": ""})
+    w.zamu("launch", "app-decisions", "--go", env={"TMUX": ""})
     (call,) = w.calls("tmux")
     i = call.index("-c")
     assert call[i + 2:i + 5] == ["sh", "-c", '"$@"; exec "${SHELL:-/bin/sh}" -l']
-    assert call[i + 5] == "foreman-worker:" + call[call.index("--session-id") + 1]
+    assert call[i + 5] == "zamu-worker:" + call[call.index("--session-id") + 1]
     assert call[i + 6] == "claude"
     prompt = call[-1]
     assert "do not stop to ask the user" in prompt
 
 
 def test_configured_claude_flags_reach_the_worker(w):
-    Path(os.environ["FOREMAN_CONFIG"]).write_text(
+    Path(os.environ["ZAMU_CONFIG"]).write_text(
         'claude = ["claude", "--dangerously-skip-permissions"]\n')
-    out = w.foreman("launch", "app-decisions").stdout
+    out = w.zamu("launch", "app-decisions").stdout
     assert "claude --dangerously-skip-permissions --session-id " in out
 
 
 def test_the_pm_reporting_on_a_workers_behalf_does_not_ring_itself(w):
-    w.foreman("attach", "--repo", str(w.repos / "app"), "--target", "pm", env={"TMUX_PANE": "%9"})
-    w.foreman("report", "app-decisions", "stuck", "waiting on Q-1", env={"TMUX_PANE": "%9"})
+    w.zamu("attach", "--repo", str(w.repos / "app"), "--target", "pm", env={"TMUX_PANE": "%9"})
+    w.zamu("report", "app-decisions", "stuck", "waiting on Q-1", env={"TMUX_PANE": "%9"})
     assert not (w.fake / "msgs.txt").exists()
-    w.foreman("report", "app-decisions", "stuck", "waiting on Q-1", env={"TMUX_PANE": "%3"})
+    w.zamu("report", "app-decisions", "stuck", "waiting on Q-1", env={"TMUX_PANE": "%3"})
     assert (w.fake / "msgs.txt").exists()
 
 
 def test_adopt_warns_when_the_tree_does_not_exist(w):
-    out = w.foreman("adopt", "app-decisions", "--session", "s1").stdout
+    out = w.zamu("adopt", "app-decisions", "--session", "s1").stdout
     assert "does not exist yet" in out
 
 
 def test_a_worker_waiting_on_the_user_is_on_the_board_until_it_resumes(w):
-    w.foreman("adopt", "app-decisions", "--session", "s1")
-    w.foreman("report", "app-decisions", "waiting", "decision node @7eg285mu awaits approval (Q-ABCD)")
+    w.zamu("adopt", "app-decisions", "--session", "s1")
+    w.zamu("report", "app-decisions", "waiting", "decision node @7eg285mu awaits approval (Q-ABCD)")
     b = board(w)
     assert any("app-decisions: waiting on the user" in a and "@7eg285mu" in a for a in b["attention"])
-    w.foreman("report", "app-decisions", "running", "approved; implementing")
+    w.zamu("report", "app-decisions", "running", "approved; implementing")
     assert not any("waiting" in a for a in board(w)["attention"])
 
 
@@ -481,88 +481,88 @@ def _with_pin(w, freeze="2099-01-01"):
 def test_a_moved_pin_makes_resting_evidence_stale_and_verify_reopens_or_reaffirms(w):
     _with_pin(w)
     w.signal("decisions")
-    w.foreman("pulse")  # baseline pin, and app-decisions closes on its oracle
+    w.zamu("pulse")  # baseline pin, and app-decisions closes on its oracle
     b = board(w)
     assert b["states"]["app-decisions"] == "done"
     assert not any("pin" in c for c in b["attention"])
 
     (w.signals / "core.pin").write_text("9abc111\n")
-    out = w.foreman("pulse").stdout
+    out = w.zamu("pulse").stdout
     assert "* pin core moved 75de363 -> 9abc111; evidence now stale for app-decisions" in out
     assert "AFTER ITS FREEZE" not in out
     assert any("app-decisions: evidence stale" in a for a in board(w)["attention"])
 
     # A falsifier run elsewhere (say, ten cold starts) passed: record it, with where it lives.
-    r = w.foreman("verify", "app-decisions", "--ok", "evidence/M5/runs-10-9abc111").stdout
+    r = w.zamu("verify", "app-decisions", "--ok", "evidence/M5/runs-10-9abc111").stdout
     assert "verified at pins {'core': '9abc111'}" in r
     assert not any("stale" in a for a in board(w)["attention"])
-    assert "evidence/M5/runs-10-9abc111 at core=9abc111" in w.foreman("show", "app-decisions").stdout
+    assert "evidence/M5/runs-10-9abc111 at core=9abc111" in w.zamu("show", "app-decisions").stdout
 
     # The next move breaks it: reopen. The oracle alone does not close it again.
     (w.signals / "core.pin").write_text("deadbee\n")
-    w.foreman("pulse")
-    w.foreman("verify", "app-decisions", "--fail", "act 4b red on deadbee")
-    w.foreman("pulse")
+    w.zamu("pulse")
+    w.zamu("verify", "app-decisions", "--fail", "act 4b red on deadbee")
+    w.zamu("pulse")
     b = board(w)
     assert b["states"]["app-decisions"] == "ready"
     assert any("app-decisions: reopened" in a for a in b["attention"])
-    w.foreman("adopt", "app-decisions", "--session", "s9")
-    w.foreman("report", "app-decisions", "done", "fixed for deadbee", "--evidence", "PR #7")
+    w.zamu("adopt", "app-decisions", "--session", "s9")
+    w.zamu("report", "app-decisions", "done", "fixed for deadbee", "--evidence", "PR #7")
     assert board(w)["states"]["app-decisions"] == "done"
 
 
 def test_a_pin_moving_after_its_freeze_is_called_out(w):
     _with_pin(w, freeze="2000-01-01")
-    w.foreman("pulse")
+    w.zamu("pulse")
     (w.signals / "core.pin").write_text("9abc111\n")
-    assert "AFTER ITS FREEZE (2000-01-01)" in w.foreman("pulse").stdout
+    assert "AFTER ITS FREEZE (2000-01-01)" in w.zamu("pulse").stdout
 
 
 def test_an_unreadable_pin_is_not_a_move(w):
     _with_pin(w)
-    w.foreman("pulse")
+    w.zamu("pulse")
     (w.signals / "core.pin").unlink()
-    assert "pin core" not in w.foreman("pulse").stdout
+    assert "pin core" not in w.zamu("pulse").stdout
     (w.signals / "core.pin").write_text("75de363\n")
-    assert "pin core" not in w.foreman("pulse").stdout
+    assert "pin core" not in w.zamu("pulse").stdout
 
 
 # R-YJY0: workers separate from items ---------------------------------------------------------
 def test_one_worker_carries_items_in_turn_and_holds_one_slot(w):
-    w.foreman("worker", "add", "sub-a", "--engine", "subagent", "--note", "PM's re-pin subagent")
-    out = w.foreman("assign", "app-decisions", "sub-a").stdout
+    w.zamu("worker", "add", "sub-a", "--engine", "subagent", "--note", "PM's re-pin subagent")
+    out = w.zamu("assign", "app-decisions", "sub-a").stdout
     assert "app-decisions assigned to sub-a (subagent)" in out
-    assert "Deliver this brief" in out and "foreman report --plan roadmap app-decisions" in out
+    assert "Deliver this brief" in out and "zamu report --plan roadmap app-decisions" in out
     (w.fake / "merged.txt").write_text("upstream/lib#1576\nupstream/lib#1577\n")
-    w.foreman("pulse")
-    w.foreman("assign", "app-upstream", "sub-a")
-    w.foreman("pulse")
+    w.zamu("pulse")
+    w.zamu("assign", "app-upstream", "sub-a")
+    w.zamu("pulse")
     b = board(w)
     assert b["workers"] == [1, 3]
-    assert "app-upstream [sub-a] running unknown" in w.foreman("board").stdout
+    assert "app-upstream [sub-a] running unknown" in w.zamu("board").stdout
 
-    w.foreman("mark", "app-decisions", "done")
-    w.foreman("mark", "app-upstream", "done")
-    assert "idle workers, assignable: sub-a (subagent)" in w.foreman("board").stdout
-    assert "sub-a  subagent" in w.foreman("worker", "list").stdout
+    w.zamu("mark", "app-decisions", "done")
+    w.zamu("mark", "app-upstream", "done")
+    assert "idle workers, assignable: sub-a (subagent)" in w.zamu("board").stdout
+    assert "sub-a  subagent" in w.zamu("worker", "list").stdout
 
 
 def test_a_codex_item_launches_codex_with_the_prompt_and_no_session_flag(w):
-    Path(os.environ["FOREMAN_CONFIG"]).write_text('[engines]\ncodex = ["codex", "--yolo"]\n')
+    Path(os.environ["ZAMU_CONFIG"]).write_text('[engines]\ncodex = ["codex", "--yolo"]\n')
     p = w.plan_dir / "plan.toml"
     p.write_text(p.read_text().replace('[items.app-decisions]\n',
                                        '[items.app-decisions]\nengine = "codex"\n'))
-    out = w.foreman("launch", "app-decisions").stdout
+    out = w.zamu("launch", "app-decisions").stdout
     line = next(l for l in out.splitlines() if l.startswith("tmux new-window"))
     assert " codex --yolo 'You are the worker session" in line
-    assert "--session-id" not in line and " foreman-worker:" in line
+    assert "--session-id" not in line and " zamu-worker:" in line
 
 
 def test_an_item_naming_an_unknown_engine_is_refused_at_launch(w):
     p = w.plan_dir / "plan.toml"
     p.write_text(p.read_text().replace('[items.app-decisions]\n',
                                        '[items.app-decisions]\nengine = "gemini"\n'))
-    r = w.foreman("launch", "app-decisions", check=False)
+    r = w.zamu("launch", "app-decisions", check=False)
     assert r.returncode == 2 and "engine 'gemini'" in r.stderr
 
 
@@ -571,36 +571,36 @@ def test_rules_are_recorded_on_disk_and_owned_documents_listed(w):
     p = w.plan_dir / "plan.toml"
     p.write_text(p.read_text().replace('name = "roadmap"',
                                        'name = "roadmap"\nowns = ["status.md"]'))
-    assert "(none yet)" in w.foreman("rules").stdout
-    w.foreman("rules", "--add", "Hand-merge when the gate objects only on scope; "
+    assert "(none yet)" in w.zamu("rules").stdout
+    w.zamu("rules", "--add", "Hand-merge when the gate objects only on scope; "
               "cross-engine review required.", "--source", "Q-MMQY")
-    out = w.foreman("rules").stdout
+    out = w.zamu("rules").stdout
     assert "(Q-MMQY): Hand-merge when the gate objects only on scope" in out
     assert f"documents the PM maintains: {w.plan_dir / 'status.md'}" in out
 
 
 def test_landing_an_item_tells_the_pm_whose_base_moved(w):
-    w.foreman("adopt", "app-decisions", "--session", "s1")
+    w.zamu("adopt", "app-decisions", "--session", "s1")
     (w.fake / "merged.txt").write_text("upstream/lib#1576\nupstream/lib#1577\n")
-    w.foreman("pulse")
-    w.foreman("adopt", "app-upstream", "--session", "s2")
-    out = w.foreman("mark", "app-decisions", "done").stdout
+    w.zamu("pulse")
+    w.zamu("adopt", "app-upstream", "--session", "s2")
+    out = w.zamu("mark", "app-decisions", "done").stdout
     assert f"base moved for app-upstream in {w.repos / 'app'}" in out
 
 
 def test_the_cap_is_the_machines_and_counts_workers_in_every_plan(w):
     """foreman-imbu's catch: plan B said 0/4 while plan A had 4 live."""
-    w.foreman("init", "second")
-    d2 = Path(os.environ["FOREMAN_HOME"]) / "plans" / "second"
+    w.zamu("init", "second")
+    d2 = Path(os.environ["ZAMU_HOME"]) / "plans" / "second"
     (d2 / "plan.toml").write_text(
         f'[items.b1]\ntitle="B1"\nkind="build"\nrepo="{w.repos / "relay"}"\noracle="manual"\n')
-    cap = {"FOREMAN_MAX_WORKERS": "2", "TMUX": ""}
-    w.foreman("adopt", "--plan", "roadmap", "app-decisions", "--session", "s1", env=cap)
-    w.foreman("adopt", "--plan", "roadmap", "app-upstream", "--session", "s2", env=cap)
-    b = json.loads(w.foreman("board", "--plan", "second", "--json", env=cap).stdout)
+    cap = {"ZAMU_MAX_WORKERS": "2", "TMUX": ""}
+    w.zamu("adopt", "--plan", "roadmap", "app-decisions", "--session", "s1", env=cap)
+    w.zamu("adopt", "--plan", "roadmap", "app-upstream", "--session", "s2", env=cap)
+    b = json.loads(w.zamu("board", "--plan", "second", "--json", env=cap).stdout)
     assert b["workers"] == [2, 2] and b["slots"] == 0 and b["elsewhere"] == {"roadmap": 2}
-    assert "workers 2/2 (2 in roadmap 2)" in w.foreman("board", "--plan", "second", env=cap).stdout
-    r = w.foreman("launch", "--plan", "second", "b1", env=cap, check=False)
+    assert "workers 2/2 (2 in roadmap 2)" in w.zamu("board", "--plan", "second", env=cap).stdout
+    r = w.zamu("launch", "--plan", "second", "b1", env=cap, check=False)
     assert r.returncode == 2 and "2 of 2 workers are live" in r.stderr
-    w.foreman("mark", "--plan", "roadmap", "app-upstream", "done", env=cap)
-    assert json.loads(w.foreman("board", "--plan", "second", "--json", env=cap).stdout)["slots"] == 1
+    w.zamu("mark", "--plan", "roadmap", "app-upstream", "done", env=cap)
+    assert json.loads(w.zamu("board", "--plan", "second", "--json", env=cap).stdout)["slots"] == 1

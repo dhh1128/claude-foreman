@@ -7,10 +7,10 @@ from pathlib import Path
 
 import pytest
 
-from foreman import engine, store
-from foreman.config import Config
-from foreman.coord import Coord
-from foreman.plan import parse
+from zamu import engine, store
+from zamu.config import Config
+from zamu.coord import Coord
+from zamu.plan import parse
 
 T0 = dt.datetime(2026, 10, 12, 12, 0, tzinfo=dt.timezone.utc)
 
@@ -31,7 +31,7 @@ def setup(tmp_path):
     plan = parse('[items.a]\ntitle="A"\nkind="build"\nrepo="/r"\noracle="manual"\n',
                  tmp_path / "plan.toml")
     engine.adopt(plan, tmp_path, engine.World(now=lambda: T0), "a", "sid-1", "%5", "/r", "")
-    with store.transaction(tmp_path) as doc:  # as if foreman had launched it: pane proof applies
+    with store.transaction(tmp_path) as doc:  # as if zamu had launched it: pane proof applies
         doc["items"]["a"]["ours"] = True
     return plan, tmp_path
 
@@ -53,7 +53,7 @@ def test_worker_liveness(setup, board, pane, want):
     assert store.read(d)["items"]["a"]["worker"] == want
 
 
-def test_the_pane_proves_nothing_for_a_worker_foreman_did_not_launch(setup):
+def test_the_pane_proves_nothing_for_a_worker_zamu_did_not_launch(setup):
     """A hand-started claude's argv carries no token, so a pane lookup cannot tell."""
     plan, d = setup
     with store.transaction(d) as doc:

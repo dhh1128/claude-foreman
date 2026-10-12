@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import datetime as dt
 
-from foreman import engine, render, store
-from foreman.config import Config
-from foreman.coord import Coord
-from foreman.plan import parse
-from foreman.procs import Proc
+from zamu import engine, render, store
+from zamu.config import Config
+from zamu.coord import Coord
+from zamu.plan import parse
+from zamu.procs import Proc
 
 class NoCoord(Coord):
     def live_sessions(self, repo):

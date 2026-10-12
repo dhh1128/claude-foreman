@@ -57,7 +57,7 @@ def read(plan_dir: Path) -> dict[str, Any]:
         raise StoreError(f"{p} is not valid JSON ({e}). It was not overwritten; repair it or "
                          "move it aside, and the events log beside it holds the history.") from None
     if not isinstance(doc, dict) or not isinstance(doc.get("items"), dict):
-        raise StoreError(f"{p} does not look like foreman state; it was not overwritten.")
+        raise StoreError(f"{p} does not look like zamu state; it was not overwritten.")
     doc.setdefault("pm", {})
     return doc
 
@@ -93,7 +93,7 @@ def locked(plan_dir: Path, wait: float = 30.0) -> Iterator[None]:
                 break
             except BlockingIOError:
                 if time.monotonic() >= deadline:
-                    raise TimeoutError(f"another foreman process holds {plan_dir / LOCK}; "
+                    raise TimeoutError(f"another zamu process holds {plan_dir / LOCK}; "
                                        "retry in a moment.") from None
                 time.sleep(0.05)
         yield

@@ -8,10 +8,10 @@ from pathlib import Path
 
 import pytest
 
-from foreman import engine, render, store
-from foreman.config import Config
-from foreman.coord import Coord
-from foreman.plan import PlanError, parse
+from zamu import engine, render, store
+from zamu.config import Config
+from zamu.coord import Coord
+from zamu.plan import PlanError, parse
 
 T0 = dt.datetime(2026, 10, 12, 12, 0, tzinfo=dt.timezone.utc)
 
@@ -69,7 +69,7 @@ def _pulse(plan, d, coord, t):
 
 
 def test_an_external_wait_on_the_user_files_one_A_ask(tmp_path, monkeypatch):
-    monkeypatch.setenv("FOREMAN_USER", "Daniel")
+    monkeypatch.setenv("ZAMU_USER", "Daniel")
     plan, c = _plan(tmp_path), Asks()
     engine.mark(plan, tmp_path, engine.World(now=lambda: T0), "prep", "done", "")
     _pulse(plan, tmp_path, c, T0)
@@ -81,7 +81,7 @@ def test_an_external_wait_on_the_user_files_one_A_ask(tmp_path, monkeypatch):
 
 
 def test_waiting_on_a_name_matches_the_user_by_name(tmp_path, monkeypatch):
-    monkeypatch.setenv("FOREMAN_USER", "Daniel")
+    monkeypatch.setenv("ZAMU_USER", "Daniel")
     plan = parse(PLAN.replace('waiting_on = "user"', 'waiting_on = "Daniel"'),
                  tmp_path / "plan.toml")
     c = Asks()

@@ -1,11 +1,11 @@
 """Where things live, and the few settings a machine or a plan can change.
 
-State root: `$FOREMAN_HOME`, default `~/.local/state/foreman`. Each plan is a directory under
+State root: `$ZAMU_HOME`, default `~/.local/state/zamu`. Each plan is a directory under
 `plans/<name>/` holding `plan.toml`, `state.json`, `events.jsonl` and any briefs. That entry may
 be a symlink to a directory elsewhere -- a private git repo, for history -- which is how a plan
 lives outside every repo it manages without the CLI needing two code paths.
 
-Config: `$FOREMAN_CONFIG`, default `~/.config/foreman/config.toml`. Every key is optional:
+Config: `$ZAMU_CONFIG`, default `~/.config/zamu/config.toml`. Every key is optional:
 
     max_workers = 3          # the machine's cap on live workers
     stall_hours = 4          # no report for this long flags a worker as stalled
@@ -22,7 +22,7 @@ for their own machine; nothing here defaults to it.
     idle_minutes = 30        # a leftover process whose CPU has not moved this long is "idle"
     pane_quiet_minutes = 30  # a running worker's pane unchanged this long may be at a prompt
 
-`FOREMAN_MAX_WORKERS` overrides `max_workers`. A plan's own `max_workers` can only lower the
+`ZAMU_MAX_WORKERS` overrides `max_workers`. A plan's own `max_workers` can only lower the
 cap, never raise it: the machine's limit exists because of memory, and a plan file written on
 another machine does not know this one's.
 """
@@ -41,8 +41,13 @@ class ConfigError(ValueError):
     pass
 
 
+def env(name: str) -> str:
+    """ZAMU_<name>, else the FOREMAN_<name> it was called before the rename (2026-10-12)."""
+    return os.environ.get(f"ZAMU_{name}") or os.environ.get(f"FOREMAN_{name}") or ""
+
+
 def home() -> Path:
-    return Path(os.environ.get("FOREMAN_HOME") or "~/.local/state/foreman").expanduser()
+    return Path(env("HOME") or "~/.local/state/zamu").expanduser()
 
 
 def plans_dir() -> Path:
@@ -50,11 +55,11 @@ def plans_dir() -> Path:
 
 
 def config_path() -> Path:
-    return Path(os.environ.get("FOREMAN_CONFIG") or "~/.config/foreman/config.toml").expanduser()
+    return Path(env("CONFIG") or "~/.config/zamu/config.toml").expanduser()
 
 
 def addendum_path() -> Path:
-    return Path(os.environ.get("FOREMAN_ADDENDUM") or "~/.config/foreman/addendum.md").expanduser()
+    return Path(env("ADDENDUM") or "~/.config/zamu/addendum.md").expanduser()
 
 
 @dataclass(frozen=True)
@@ -95,9 +100,9 @@ def load() -> Config:
         if isinstance(kw["claude"], str):
             kw["claude"] = (kw["claude"],)
         kw["claude"] = tuple(kw["claude"])
-    env = os.environ.get("FOREMAN_MAX_WORKERS")
-    if env:
-        kw["max_workers"] = env
+    env_cap = env("MAX_WORKERS")
+    if env_cap:
+        kw["max_workers"] = env_cap
     try:
         mw = int(kw.get("max_workers", DEFAULT_MAX_WORKERS))
     except (TypeError, ValueError):
@@ -117,8 +122,8 @@ def load() -> Config:
 
 
 def resolve_plan_dir(ref: str | None) -> Path:
-    """A plan name, a directory, or a plan.toml path; else $FOREMAN_PLAN; else the only plan."""
-    ref = ref or os.environ.get("FOREMAN_PLAN") or ""
+    """A plan name, a directory, or a plan.toml path; else $ZAMU_PLAN; else the only plan."""
+    ref = ref or env("PLAN") or ""
     if ref:
         p = Path(ref).expanduser()
         if p.name == "plan.toml":
@@ -133,7 +138,7 @@ def resolve_plan_dir(ref: str | None) -> Path:
     if len(known) == 1:
         return plans_dir() / known[0]
     if not known:
-        raise ConfigError("no plans yet; create one with `foreman init <name>`.")
+        raise ConfigError("no plans yet; create one with `zamu init <name>`.")
     raise ConfigError(f"several plans exist ({', '.join(known)}); pass --plan <name>.")
 
 

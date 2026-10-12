@@ -1,10 +1,10 @@
 {
-  "name": "foreman",
+  "name": "zamu",
   "owner": { "name": "Daniel Hardman", "url": "https://github.com/dhh1128" },
-  "description": "foreman: a project manager for several Claude Code sessions working one plan across repos.",
+  "description": "zamu: a project manager for several Claude Code sessions working one plan across repos.",
   "plugins": [
     {
-      "name": "foreman",
+      "name": "zamu",
       "source": "./",
       "description": "Hold a cross-repo plan, launch worker sessions when dependencies clear, watch them, escalate."
     }

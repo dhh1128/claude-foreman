@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from foreman.plan import PlanError, parse
+from zamu.plan import PlanError, parse
 
 P = Path("/plans/x/plan.toml")
 

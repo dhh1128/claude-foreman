@@ -4,7 +4,7 @@ import subprocess
 
 import pytest
 
-from foreman.oracles import OracleError, check, check_one, parse_spec
+from zamu.oracles import OracleError, check, check_one, parse_spec
 
 
 def runner(table):

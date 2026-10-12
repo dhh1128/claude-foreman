@@ -1,4 +1,4 @@
-"""The `foreman` command. Argument parsing and printing only; the logic is in `engine`."""
+"""The `zamu` command. Argument parsing and printing only; the logic is in `engine`."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from .launch import LaunchError
 from .oracles import OracleError
 from .plan import PlanError, load
 
-TEMPLATE = '''# foreman plan. Edit freely; `foreman check` validates, `foreman board` shows state.
+TEMPLATE = '''# zamu plan. Edit freely; `zamu check` validates, `zamu board` shows state.
 # Items: kind = "build" (a worker does it), "decision" (the user decides), "external" (waits
 # on the world). Oracles: "pr:owner/repo#N", "cmd:<shell>", "file:<path>", "manual".
 
@@ -311,12 +311,12 @@ def cmd_addendum(args) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="foreman", description="Hold a cross-repo plan, launch "
+    p = argparse.ArgumentParser(prog="zamu", description="Hold a cross-repo plan, launch "
                                 "worker sessions when dependencies clear, watch them, escalate.")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     def plan_arg(sp):
-        sp.add_argument("--plan", help="plan name or path (default $FOREMAN_PLAN, or the only plan)")
+        sp.add_argument("--plan", help="plan name or path (default $ZAMU_PLAN, or the only plan)")
 
     s = sub.add_parser("init", help="create a plan")
     s.add_argument("name")
@@ -367,7 +367,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--note")
     s.add_argument("--evidence", help="where the proof lives, when marking done")
     s.set_defaults(func=cmd_mark)
-    s = sub.add_parser("attach", help="tell foreman where the PM session is, so reports wake it")
+    s = sub.add_parser("attach", help="tell zamu where the PM session is, so reports wake it")
     plan_arg(s)
     s.add_argument("--repo", help="the PM session's project (default cwd)")
     s.add_argument("--target", help="the PM session's name, pane or id (default $TMUX_PANE)")
@@ -420,8 +420,8 @@ def main(argv: list[str] | None = None) -> int:
         return args.func(args)
     except (PlanError, ConfigError, OracleError, engine.EngineError, LaunchError,
             store.StoreError) as e:
-        print(f"foreman: {e}", file=sys.stderr)
+        print(f"zamu: {e}", file=sys.stderr)
         return 2
     except TimeoutError as e:
-        print(f"foreman: {e}", file=sys.stderr)
+        print(f"zamu: {e}", file=sys.stderr)
         return 75

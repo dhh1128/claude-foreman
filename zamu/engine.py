@@ -77,7 +77,8 @@ def ask_tag(plan: Plan, item_id: str, kind: str = "Q") -> str:
 
 
 def user_name() -> str:
-    return os.environ.get("FOREMAN_USER") or os.environ.get("SESSION_COORD_USER") or "the user"
+    from .config import env
+    return env("USER") or os.environ.get("SESSION_COORD_USER") or "the user"
 
 
 def waits_on_user(it: Item) -> bool:
@@ -202,8 +203,8 @@ def _liveness(rec: dict[str, Any], live: set[str] | None, world: World, now: dt.
     """live, starting, dead or unknown, from whatever proof this worker's kind allows.
 
     - session-coord's board, for any worker with a Claude session id;
-    - the recorded pane, for a worker foreman launched: its argv carries a token
-      (`foreman-worker:<id>`) that disappears when the engine exits, so its absence is evidence;
+    - the recorded pane, for a worker zamu launched: its argv carries a token
+      (`zamu-worker:<id>`) that disappears when the engine exits, so its absence is evidence;
     - for a worker someone else started with no session id (a Codex window), only whether its
       pane still exists;
     - a subagent has neither, and is `unknown` unless the PM reports for it.
@@ -214,7 +215,7 @@ def _liveness(rec: dict[str, Any], live: set[str] | None, world: World, now: dt.
     if not pane:
         in_pane = None
     elif rec.get("ours"):
-        # foreman put the token in the argv, so its absence is evidence too.
+        # zamu put the token in the argv, so its absence is evidence too.
         in_pane = world.pane_has_session(pane, rec.get("token") or sid)
     elif sid:
         # Someone else started it. Finding the session id in the pane's process tree proves it
@@ -278,7 +279,7 @@ def _pins(plan: Plan, plan_dir: Path, doc: dict[str, Any], values: dict[str, str
                after_freeze=frozen)
         out.append(f"pin {name} moved {prev} -> {value}"
                    + (f" AFTER ITS FREEZE ({pin.freeze})" if frozen else "")
-                   + (f"; evidence now stale for {', '.join(stale)} (`foreman verify <id>`)"
+                   + (f"; evidence now stale for {', '.join(stale)} (`zamu verify <id>`)"
                       if stale else ""))
     return out
 
@@ -379,7 +380,7 @@ def _escalate(plan: Plan, plan_dir: Path, doc: dict[str, Any], sts: dict[str, st
                     + (f" {it.question}" if it.question else "")
                     + (f" Details: {it.brief}." if it.brief else "")
                     + (f" It unblocks: {'; '.join(unblocks)}." if unblocks else "")
-                    + " foreman notices by itself when it is done; nothing to report back.")
+                    + " zamu notices by itself when it is done; nothing to report back.")
         deps = [doc["items"].get(d, {}).get("ask") for d in it.depends_on]
         ok, note = world.coord.ask_add(repo, tag, kind, text, [d for d in deps if d])
         if ok:
@@ -464,7 +465,7 @@ def prepare(plan: Plan, plan_dir: Path, cfg: Config, world: World, ids: list[str
         if it.kind != "build":
             raise EngineError(f"{iid} is a {it.kind} item; only build items get a worker. "
                               + ("Decisions are the user's." if it.kind == "decision" else
-                                 "External items wait on the world; foreman only polls them."))
+                                 "External items wait on the world; zamu only polls them."))
         rec = doc["items"].get(iid, {})
         session = None
         if relaunch:
@@ -555,7 +556,7 @@ def _register_worker(doc: dict[str, Any], wid: str, engine: str, session: str, p
 def worker_add(plan_dir: Path, world: World, wid: str, engine: str, session: str = "",
                pane: str = "", worktree: str = "", note: str = "") -> str:
     """Register an agent someone else started -- a Claude session, a Codex window, a subagent
-    the PM runs -- so items can be assigned to it and foreman can watch what it can."""
+    the PM runs -- so items can be assigned to it and zamu can watch what it can."""
     if not wid or not wid.replace("-", "").replace("_", "").replace(".", "").isalnum():
         raise EngineError(f"worker id {wid!r}: use letters, digits, '-', '_' and '.'.")
     with store.transaction(plan_dir) as doc:
@@ -568,7 +569,7 @@ def worker_add(plan_dir: Path, world: World, wid: str, engine: str, session: str
 
 
 def assign(plan: Plan, plan_dir: Path, world: World, iid: str, wid: str, note: str = "") -> str:
-    """Give an item to a registered worker. foreman records it; the PM delivers the brief,
+    """Give an item to a registered worker. zamu records it; the PM delivers the brief,
     because how to reach a worker depends on what it is."""
     it = plan.items.get(iid)
     if it is None:
@@ -579,19 +580,19 @@ def assign(plan: Plan, plan_dir: Path, world: World, iid: str, wid: str, note: s
     with store.transaction(plan_dir) as doc:
         w = doc.get("workers", {}).get(wid)
         if w is None:
-            raise EngineError(f"no worker {wid!r}; register it with `foreman worker add`.")
+            raise EngineError(f"no worker {wid!r}; register it with `zamu worker add`.")
         sts = graph.states(plan, doc)
         rec = _rec(doc, iid)
         if sts[iid] in graph.FINAL:
             raise EngineError(f"{iid} is already {sts[iid]}.")
         if rec.get("wid") and rec["wid"] != wid and rec.get("worker") != "dead":
             raise EngineError(f"{iid} already has a worker ({rec['wid']}, "
-                              f"{rec.get('worker', 'unchecked')}); `foreman mark {iid} reset` "
+                              f"{rec.get('worker', 'unchecked')}); `zamu mark {iid} reset` "
                               "first if that one is gone.")
         if (rec.get("session") and not rec.get("wid") and rec["session"] != w.get("session")
                 and rec.get("worker") != "dead"):
             raise EngineError(f"{iid} already has a worker ({rec['session']}); "
-                              f"`foreman mark {iid} reset` first if that one is gone.")
+                              f"`zamu mark {iid} reset` first if that one is gone.")
         rec.update({"state": rec.get("state") if sts[iid] in graph.ACTIVE else "running",
                     "wid": wid, "session": w.get("session", ""), "pane": w.get("pane", ""),
                     "worktree": w.get("worktree") or f"{it.repo.rstrip('/')}/.worktrees/{it.topic}",
@@ -630,7 +631,7 @@ def adopt(plan: Plan, plan_dir: Path, world: World, iid: str, session: str, pane
     if cur and rec.get("session") != session and rec.get("worker") != "dead" \
             and graph.states(plan, doc)[iid] in graph.ACTIVE:
         raise EngineError(f"{iid} already has a worker ({rec.get('session') or cur}, "
-                          f"{rec.get('worker', 'unchecked')}); `foreman mark {iid} reset` first "
+                          f"{rec.get('worker', 'unchecked')}); `zamu mark {iid} reset` first "
                           "if that one is gone.")
     worker_add(plan_dir, world, wid, engine, session, pane, wt, note)
     out = assign(plan, plan_dir, world, iid, wid, note or "adopted")
@@ -688,7 +689,7 @@ def report(plan: Plan, plan_dir: Path, world: World, iid: str, state: str, line:
     from_pm = bool(pm.get("pane")) and pm.get("pane") == world.pane()
     if state in ("review", "done") + FLAGS and pm.get("repo") and pm.get("target") and not from_pm:
         world.coord.msg(pm["repo"], pm["target"],
-                        f"foreman: {outcome}. Worker says: {line}. Run `foreman pulse --plan "
+                        f"zamu: {outcome}. Worker says: {line}. Run `zamu pulse --plan "
                         f"{plan.name}`.")
     return outcome
 

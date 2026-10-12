@@ -51,11 +51,11 @@ class Launch:
 def worker_prompt(plan: Plan, it: Item, worktree: str, resume: bool) -> str:
     briefs = " then ".join(p for p in (plan.common_brief, it.brief) if p) or "(no brief given)"
     oracle = " AND ".join(it.oracle) if it.oracle else "none"
-    rep = f"foreman report --plan {shlex.quote(plan.name)} {it.id}"
-    head = (f"You were relaunched as the worker for foreman plan '{plan.name}', item "
+    rep = f"zamu report --plan {shlex.quote(plan.name)} {it.id}"
+    head = (f"You were relaunched as the worker for zamu plan '{plan.name}', item "
             f"'{it.id}'. Your previous session ended; check the worktree and branch state "
             f"before continuing." if resume else
-            f"You are the worker session for foreman plan '{plan.name}', item '{it.id}': "
+            f"You are the worker session for zamu plan '{plan.name}', item '{it.id}': "
             f"{it.title}.")
     return (
         f"{head} Read {briefs} before doing anything else. You are in the worktree {worktree} "
@@ -63,9 +63,9 @@ def worker_prompt(plan: Plan, it: Item, worktree: str, resume: bool) -> str:
         f"line>\"` at each milestone, `{rep} review \"<PR url>\"` once your PR is open, `{rep} "
         f"done \"<one line>\"` when you believe the work is finished, `{rep} waiting \"<what the "
         f"user must decide, with any ask ids>\"` when you pause for the user's approval, and `{rep} stuck \"<what "
-        f"you need>\"` if you cannot proceed. foreman checks the exit condition itself and "
+        f"you need>\"` if you cannot proceed. zamu checks the exit condition itself and "
         f"does not take your word for it: {oracle}. Merging, review, and anything needing the "
-        f"user follow your normal rules; foreman will not do them for you. You were started "
+        f"user follow your normal rules; zamu will not do them for you. You were started "
         f"in a background window that nobody is watching, so do not stop to ask the user "
         f"anything before you begin, even if a brief says to; if you genuinely cannot proceed "
         f"without them, report stuck and say what you need. If you hand work to Codex or another "
@@ -116,7 +116,7 @@ def plan_launch(plan: Plan, it: Item, *, tmux_session: str, claude: Sequence[str
     # $0 carries a token that lives exactly as long as the engine does: when the engine exits,
     # the exec replaces this argv. That proves liveness by pane for engines session-coord
     # cannot see.
-    shell = ["sh", "-c", '"$@"; exec "${SHELL:-/bin/sh}" -l', f"foreman-worker:{sid}", *cmd]
+    shell = ["sh", "-c", '"$@"; exec "${SHELL:-/bin/sh}" -l', f"zamu-worker:{sid}", *cmd]
     tmux += ["-n", it.topic, "-c", wt, *shell]
     steps.append(Step(tuple(tmux), "open a window running the worker", capture="pane"))
     return Launch(it.id, sid, wt, it.topic, resume, tuple(steps), token=sid)

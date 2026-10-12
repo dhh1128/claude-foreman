@@ -1,4 +1,4 @@
-"""Exit oracles: machine-checkable done-conditions, checked by foreman rather than believed.
+"""Exit oracles: machine-checkable done-conditions, checked by zamu rather than believed.
 
 A worker saying "done" is a claim. An oracle is the check. The PM never marks an item done on
 a worker's word, because the cost of a wrong "done" is a dependent launched onto a base that
@@ -10,7 +10,7 @@ Spec forms, one string each; an item may list several and all must hold:
     pr:https://github.com/o/r/pull/123
     cmd:<shell command>          exits 0, run in the item's repo (or the plan's directory)
     file:<path>                  exists
-    manual                       never true by itself; `foreman mark <id> done` closes it
+    manual                       never true by itself; `zamu mark <id> done` closes it
 
 Every check answers True, False or None, and None means *could not look* -- gh not installed,
 a timeout, a network error. That is never treated as False, and never as True. The rule is
@@ -68,7 +68,7 @@ def parse_spec(spec: str) -> tuple[str, str]:
 def check_one(spec: str, cwd: str, run: Runner = default_runner) -> Verdict:
     kind, arg = parse_spec(spec)
     if kind == "manual":
-        return Verdict(False, "manual: closed only by `foreman mark <id> done`")
+        return Verdict(False, "manual: closed only by `zamu mark <id> done`")
     if kind == "file":
         p = Path(os.path.expanduser(arg))
         try:

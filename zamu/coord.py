@@ -1,6 +1,6 @@
 """The session-coord adapter: liveness, the ask queue, and waking the PM.
 
-foreman reuses session-coord rather than reimplementing any of it. Liveness in particular took
+zamu reuses session-coord rather than reimplementing any of it. Liveness in particular took
 session-coord eleven review rounds to get right -- pid recycling, tmux server restarts, panes
 that hold a different claude than the one recorded -- and a second copy would drift from the
 first the day either changed. So a worker is live iff session-coord's own board, which sweeps

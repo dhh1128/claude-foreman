@@ -1,26 +1,10 @@
 #!/usr/bin/env python3
-"""foreman -- hold a cross-repo plan, launch worker sessions when dependencies clear, watch
-them, and escalate. A thin entry point; everything lives in the `foreman` package beside `bin/`.
+"""`foreman` is zamu's name before 2026-10-12. Kept for one release so sessions and worker
+prompts that still say `foreman` keep working; it runs `zamu` with the same arguments."""
 
-    foreman board            what a waking PM reads
-    foreman pulse            check oracles and workers, escalate decisions, print the board
-    foreman launch --ready   what would launch now (dry run; --go executes)
-    foreman report <id> <running|review|done|stuck> "<line>"   (workers)
-    foreman --help           everything else
-
-Tests: uv run --no-project --python 3.11 --with pytest python -m pytest tests -q
-"""
-
+import os
 import sys
-
-if sys.version_info < (3, 11):
-    sys.exit("foreman needs Python 3.11 or later (it reads TOML with tomllib).")
-
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
-from foreman.cli import main  # noqa: E402
-
-if __name__ == "__main__":
-    sys.exit(main())
+zamu = Path(__file__).resolve().parent / "zamu"
+os.execv(sys.executable, [sys.executable, str(zamu), *sys.argv[1:]])

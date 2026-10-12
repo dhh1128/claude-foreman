@@ -1,6 +1,6 @@
 """Processes a worker left behind: orphans, hangs, and runs in worktrees that no longer exist.
 
-A worker can be live by every test foreman has and still be leaving damage behind. On the first
+A worker can be live by every test zamu has and still be leaving damage behind. On the first
 real plan (2026-10-12), a worker handed its test loop to Codex; Codex exited and left three full
 pytest-xdist suites hung for 45 minutes at 0% CPU in the worker's worktree, still holding ports,
 and the worker read as live throughout. A sweep then found two test processes idle for ten days
@@ -17,7 +17,7 @@ What is checked, all without reading a transcript:
 Idleness alone is not a finding. A worker's own claude, its shell and its helpers sit in the
 worktree at 0% CPU whenever it waits, and flagging them would bury the real cases.
 
-foreman reports these. It kills only with `reap --go`, and only a process that is orphaned,
+zamu reports these. It kills only with `reap --go`, and only a process that is orphaned,
 outside every tmux pane, not a claude, and in a deleted directory or under an item that is done
 or abandoned. Everything else is the worker's to clean up, because killing a test run a live
 worker is waiting on is worse than leaving it.

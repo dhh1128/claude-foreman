@@ -1,7 +1,7 @@
 """Stand-ins for the world: temp git repos with a bare origin, and fake `session-coord`, `tmux`
 and `gh` executables on PATH that log every call.
 
-The fakes are executables, not monkeypatches, so the acceptance tests drive the real `foreman`
+The fakes are executables, not monkeypatches, so the acceptance tests drive the real `zamu`
 command in a fresh process each time -- which is also how they show that nothing survives in
 memory between calls.
 """
@@ -15,7 +15,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-BIN = Path(__file__).resolve().parents[1] / "bin" / "foreman"
+BIN = Path(__file__).resolve().parents[1] / "bin" / "zamu"
 
 SESSION_COORD = r'''#!/usr/bin/env python3
 import json, os, sys
@@ -103,11 +103,11 @@ class World:
         self.signals = tmp / "signals"
         self.signals.mkdir()
 
-    def foreman(self, *args: str, env: dict | None = None, check: bool = True):
+    def zamu(self, *args: str, env: dict | None = None, check: bool = True):
         r = subprocess.run([sys.executable, str(BIN), *args], capture_output=True, text=True,
                            env={**self.env, **(env or {})}, cwd=self.tmp)
         if check and r.returncode != 0:
-            raise AssertionError(f"foreman {' '.join(args)} exited {r.returncode}:\n"
+            raise AssertionError(f"zamu {' '.join(args)} exited {r.returncode}:\n"
                                  f"{r.stdout}\n{r.stderr}")
         return r
 

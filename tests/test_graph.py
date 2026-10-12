@@ -3,8 +3,8 @@ from __future__ import annotations
 import datetime as dt
 from pathlib import Path
 
-from foreman import graph
-from foreman.plan import parse
+from zamu import graph
+from zamu.plan import parse
 
 BODY = """
 [plan]

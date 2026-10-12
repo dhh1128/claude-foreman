@@ -3,7 +3,7 @@
 The PM wakes every twenty minutes or so, and each wake costs context. So the board says what
 needs attention first, gives in-flight work one line each, and compresses everything that is
 merely waiting into a list of ids. It never includes a transcript, a log or a brief; a PM that
-wants more asks for one item with `foreman show <id>`.
+wants more asks for one item with `zamu show <id>`.
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ def summary(plan: Plan, doc: dict[str, Any], cfg: Config, now: dt.datetime) -> d
         r = recs.get(iid, {})
         if sts[iid] in graph.ACTIVE and r.get("worker") == "dead":
             attention.append(f"{iid}: worker gone, last \"{_short(r.get('last_line', ''), 50)}\" "
-                             f"-> `foreman launch --relaunch {iid}` or `foreman mark {iid} reset`")
+                             f"-> `zamu launch --relaunch {iid}` or `zamu mark {iid} reset`")
         if r.get("stuck") and sts[iid] not in graph.FINAL:
             attention.append(f"{iid}: stuck, \"{_short(r['stuck'])}\"")
         if r.get("waiting") and sts[iid] not in graph.FINAL:
@@ -63,7 +63,7 @@ def summary(plan: Plan, doc: dict[str, Any], cfg: Config, now: dt.datetime) -> d
         pids = " ".join(str(f["pid"]) for f in fs[:6]) + (" …" if len(fs) > 6 else "")
         why = sorted({w for f in fs for w in f["why"]})
         who = (f"{item}: tell its worker to kill them" if item and not all(f["reapable"] for f in fs)
-               else f"{item or 'deleted worktrees'}: `foreman reap --go` kills them")
+               else f"{item or 'deleted worktrees'}: `zamu reap --go` kills them")
         attention.append(f"{len(fs)} leftover process{'es' if len(fs) > 1 else ''} "
                          f"({', '.join(why)}) pids {pids}; {who}")
     for iid in engine.stalled(plan, doc, cfg, now):
@@ -71,7 +71,7 @@ def summary(plan: Plan, doc: dict[str, Any], cfg: Config, now: dt.datetime) -> d
     for iid in plan.items:
         r = recs.get(iid, {})
         if r.get("stale") and sts[iid] == "done":
-            attention.append(f"{iid}: evidence stale, {r['stale']} -> `foreman verify {iid}`")
+            attention.append(f"{iid}: evidence stale, {r['stale']} -> `zamu verify {iid}`")
         if r.get("reopened") and sts[iid] not in graph.FINAL:
             attention.append(f"{iid}: reopened, {_short(r['reopened'], 60)}")
     for iid, it in plan.items.items():

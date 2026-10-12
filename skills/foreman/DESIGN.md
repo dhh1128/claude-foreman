@@ -62,6 +62,10 @@ The bespoke PM was a prompt kept in a private repository. foreman took from it: 
 
 It also modelled a decision *inside* a work item ("G14 stops once for approval of a decision node"). foreman models decisions as items of their own, so the dependency is visible on the board. A worker that hits an unplanned decision reports `stuck`, and the PM files the ask.
 
+## Declined by its second customer
+
+The summit build, with a hard date five weeks out, was offered foreman on 2026-10-12 and its conductor declined, for reasons worth keeping. What remained was a few sequential items gated on the human's decisions. Its state already lived in a narrative plan, ticks and the session-coord ask queue, so a plan file would have been a second copy. And it dispatched work as resumable Agent subagents, not tmux sessions, so foreman's launcher would have been a second dispatch mechanism. foreman's value is concentrated where items run in parallel and outlast one session. A plan that is mostly sequential, gated on decisions, and run by subagents gets little from it, and switching mid-stream costs more than it saves. foreman cannot launch or watch a subagent at all. That is a gap if subagent dispatch turns out to be common.
+
 ## Rejected
 
 - **INI** (configparser, Python 3.9). Proposed; Daniel chose TOML.

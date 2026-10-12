@@ -19,6 +19,7 @@ Workers run unattended, so whatever permission mode their command sets is the mo
 in with nobody watching. Bypassing an engine's sandbox or approvals is the user's decision
 for their own machine; nothing here defaults to it.
     escalate = "session-coord"   # or "none": list decisions on the board, file nothing
+    admission = ["headroom", "check"]   # measured admission; max_workers stays a backstop
     idle_minutes = 30        # a leftover process whose CPU has not moved this long is "idle"
     pane_quiet_minutes = 30  # a running worker's pane unchanged this long may be at a prompt
 
@@ -74,6 +75,9 @@ class Config:
     escalate: str = "session-coord"
     idle_minutes: float = 30.0       # CPU still this long marks a leftover process as idle
     pane_quiet_minutes: float = 30.0 # a running worker's pane unchanged this long: at a prompt?
+    #: A command asked before each launch: exit 0 admit, 75 not now, anything else could not
+    #: look (the count cap alone then applies). Empty: the count cap alone.
+    admission: tuple[str, ...] = ()
 
     def __post_init__(self):
         if "claude" not in self.engines:
@@ -110,6 +114,10 @@ def load() -> Config:
     if mw < 1:
         raise ConfigError("max_workers must be at least 1.")
     kw["max_workers"] = mw
+    if "admission" in kw:
+        a = kw["admission"]
+        import shlex
+        kw["admission"] = tuple(shlex.split(a) if isinstance(a, str) else a)
     engines = kw.get("engines", {})
     if not isinstance(engines, dict):
         raise ConfigError("[engines] must map an engine name to a command list.")

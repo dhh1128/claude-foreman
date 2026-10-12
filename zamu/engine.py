@@ -195,6 +195,11 @@ def pulse(plan: Plan, plan_dir: Path, cfg: Config, world: World,
         if cfg.escalate == "session-coord":
             changes += _escalate(plan, plan_dir, doc, sts, world, now)
         _quiet_panes(plan, doc, sts, world)
+        if cfg.admission and graph.launchable(plan, graph.states(plan, doc)):
+            ok, why = admit(cfg, world)
+            doc["admission"] = {"ok": ok, "why": why, "at": _iso(now)}
+        else:
+            doc.pop("admission", None)
         changes += _leftovers(plan, doc, graph.states(plan, doc), cfg, world, now)
     return {"changes": changes}
 
@@ -454,12 +459,36 @@ def slots(plan: Plan, doc: dict[str, Any], cfg: Config) -> tuple[int, int]:
     return own + others, cap
 
 
+def admit(cfg: Config, world: World) -> tuple[bool | None, str]:
+    """Ask the configured admission command whether the box can take one more worker.
+
+    True admit; False not now, with the reason; None could not look -- the count cap alone
+    then applies, and the reason says so. No command configured: True.
+    """
+    if not cfg.admission:
+        return True, ""
+    try:
+        rc, out, err = world.run(list(cfg.admission))
+    except (OSError, Exception) as e:  # noqa: BLE001 -- a missing command is "could not look"
+        return None, f"admission check could not run: {e}"
+    text = (out or err).strip()
+    if rc == 0:
+        return True, text
+    if rc == 75:
+        return False, text.removeprefix("not now: ")
+    return None, f"admission check failed (exit {rc}): {text}"
+
+
 def prepare(plan: Plan, plan_dir: Path, cfg: Config, world: World, ids: list[str],
             relaunch: bool = False) -> list[launch_mod.Launch]:
     """The launches that would happen for `ids`, refusing anything the rules forbid."""
     doc = store.read(plan_dir)
     sts = graph.states(plan, doc)
     used, cap = slots(plan, doc, cfg)
+    if not relaunch:
+        ok, why = admit(cfg, world)
+        if ok is False:
+            raise EngineError(f"the box is busy, so launches wait: {why}")
     out = []
     for iid in ids:
         it = plan.items.get(iid)
@@ -504,10 +533,18 @@ def prepare(plan: Plan, plan_dir: Path, cfg: Config, world: World, ids: list[str
     return out
 
 
-def ready_to_fill(plan: Plan, plan_dir: Path, cfg: Config) -> list[str]:
+def ready_to_fill(plan: Plan, plan_dir: Path, cfg: Config,
+                  world: World | None = None) -> list[str]:
+    """Ready build items that fit the free slots. With an admission command, at most one, and
+    only if the box admits it: a launch does not load the box until the worker gets going, so
+    filling every slot on one reading would admit them all against the same idle moment."""
     doc = store.read(plan_dir)
     used, cap = slots(plan, doc, cfg)
-    return graph.launchable(plan, graph.states(plan, doc))[:max(cap - used, 0)]
+    ready = graph.launchable(plan, graph.states(plan, doc))[:max(cap - used, 0)]
+    if ready and cfg.admission and world is not None:
+        ok, _why = admit(cfg, world)
+        return [] if ok is False else ready[:1]
+    return ready
 
 
 def commit_launch(plan: Plan, plan_dir: Path, cfg: Config, world: World,

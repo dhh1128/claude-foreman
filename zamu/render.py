@@ -66,6 +66,11 @@ def summary(plan: Plan, doc: dict[str, Any], cfg: Config, now: dt.datetime) -> d
                else f"{item or 'deleted worktrees'}: `zamu reap --go` kills them")
         attention.append(f"{len(fs)} leftover process{'es' if len(fs) > 1 else ''} "
                          f"({', '.join(why)}) pids {pids}; {who}")
+    adm = doc.get("admission", {})
+    if adm.get("ok") is False and graph.launchable(plan, sts):
+        attention.append(f"launches wait, the box is busy: {_short(adm.get('why', ''), 90)}")
+    elif adm.get("ok") is None and adm.get("why"):
+        attention.append(f"admission unknown, count cap only: {_short(adm['why'], 80)}")
     for iid in engine.stalled(plan, doc, cfg, now):
         attention.append(f"{iid}: no report for {_ago(recs[iid]['last_report'], now)}")
     for iid in plan.items:

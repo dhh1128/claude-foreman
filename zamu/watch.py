@@ -97,7 +97,7 @@ def tick(plan_dir: Path, cfg: config.Config, base_world: Callable[[], engine.Wor
     t.changes += engine.pulse(plan, plan_dir, cfg, w, oracles_due=oracles_due)["changes"]
 
     if plan.autolaunch:
-        for iid in engine.ready_to_fill(plan, plan_dir, cfg):
+        for iid in engine.ready_to_fill(plan, plan_dir, cfg, w):
             try:
                 (ln,) = engine.prepare(plan, plan_dir, cfg, w, [iid])
                 got = engine.commit_launch(plan, plan_dir, cfg, w, ln)

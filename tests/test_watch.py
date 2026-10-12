@@ -138,3 +138,53 @@ def test_the_service_unit_runs_the_stable_shim(tmp_path):
     shim, shim_body, unit, body = watch.service_files(Path("/plug/zamu/1"), {"PATH": "/usr/bin"})
     assert f"ExecStart={shim} watch" in body and 'Environment="PATH=/usr/bin"' in body
     assert '"zamu@zamu"' in shim_body and "d=/plug/zamu/1" in shim_body
+
+
+def test_admission_refusal_holds_launches_and_explains(tmp_path, monkeypatch):
+    d = _setup(tmp_path)
+    Path(os.environ["ZAMU_CONFIG"]).write_text('admission = ["headroom", "check"]\n')
+    c, ran = FakeCoord(), []
+
+    def busy_world():
+        w = _world(c, ran)()
+        inner = w.run
+        w.run = lambda argv: ((75, "not now: cpu: tasks waited 70%", "")
+                              if argv[0] == "headroom" else inner(argv))
+        return w
+    t = watch.tick(d, config.load(), busy_world, oracles_due=True)
+    assert t.launched == []
+    assert any("launches wait, the box is busy: cpu: tasks waited 70%" in a for a in t.attention)
+
+
+def test_admission_admits_one_launch_per_tick(tmp_path, monkeypatch):
+    d = _setup(tmp_path)
+    Path(os.environ["ZAMU_CONFIG"]).write_text('admission = "headroom check"\n')
+    c, ran = FakeCoord(), []
+
+    def ok_world():
+        w = _world(c, ran)()
+        inner = w.run
+        w.run = lambda argv: (0, "admit", "") if argv[0] == "headroom" else inner(argv)
+        return w
+    assert len(watch.tick(d, config.load(), ok_world, oracles_due=True).launched) == 1
+    assert len(watch.tick(d, config.load(), ok_world, oracles_due=False).launched) == 1
+
+
+def test_an_admission_command_that_cannot_run_falls_back_to_the_count(tmp_path):
+    d = _setup(tmp_path)
+    Path(os.environ["ZAMU_CONFIG"]).write_text('admission = ["no-such-headroom"]\n')
+    c, ran = FakeCoord(), []
+
+    def broken():
+        w = _world(c, ran)()
+        inner = w.run
+
+        def run(argv):
+            if argv[0] == "no-such-headroom":
+                raise FileNotFoundError(argv[0])
+            return inner(argv)
+        w.run = run
+        return w
+    t = watch.tick(d, config.load(), broken, oracles_due=True)
+    assert len(t.launched) == 1
+    assert any("admission unknown, count cap only" in a for a in t.attention)

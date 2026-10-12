@@ -173,7 +173,7 @@ def cmd_launch(args) -> int:
     w = world()
     ids = list(args.items)
     if args.ready:
-        ids += [i for i in engine.ready_to_fill(plan, d, cfg) if i not in ids]
+        ids += [i for i in engine.ready_to_fill(plan, d, cfg, w) if i not in ids]
     if not ids:
         print("nothing to launch: no ready build items, or no free slots.")
         return 0

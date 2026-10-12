@@ -31,6 +31,8 @@ def setup(tmp_path):
     plan = parse('[items.a]\ntitle="A"\nkind="build"\nrepo="/r"\noracle="manual"\n',
                  tmp_path / "plan.toml")
     engine.adopt(plan, tmp_path, engine.World(now=lambda: T0), "a", "sid-1", "%5", "/r", "")
+    with store.transaction(tmp_path) as doc:  # as if foreman had launched it: pane proof applies
+        doc["items"]["a"]["ours"] = True
     return plan, tmp_path
 
 
@@ -41,7 +43,7 @@ def setup(tmp_path):
     (set(), None, "dead"),            # board looked and it is absent; pane could not be read
     (None, True, "live"),             # board unreadable, pane proves it
     (None, None, "unknown"),          # nothing could be read: never call it dead
-    (None, False, "unknown"),
+    (None, False, "dead"),            # board unreadable, but tmux says the token is gone
 ])
 def test_worker_liveness(setup, board, pane, want):
     plan, d = setup
@@ -49,3 +51,41 @@ def test_worker_liveness(setup, board, pane, want):
                      pane_has_session=lambda p, s: pane)
     engine.pulse(plan, d, Config(), w)
     assert store.read(d)["items"]["a"]["worker"] == want
+
+
+def test_the_pane_proves_nothing_for_a_worker_foreman_did_not_launch(setup):
+    """A hand-started claude's argv carries no token, so a pane lookup cannot tell."""
+    plan, d = setup
+    with store.transaction(d) as doc:
+        doc["items"]["a"].pop("ours")
+    w = engine.World(coord=FakeCoord(None), now=lambda: T0 + dt.timedelta(hours=1),
+                     pane_has_session=lambda p, s: False)
+    engine.pulse(plan, d, Config(), w)
+    assert store.read(d)["items"]["a"]["worker"] == "unknown"
+
+
+def test_a_codex_window_is_judged_by_its_pane(tmp_path):
+    plan = parse('[items.a]\ntitle="A"\nkind="build"\nrepo="/r"\noracle="manual"\n',
+                 tmp_path / "plan.toml")
+    w0 = engine.World(now=lambda: T0)
+    engine.worker_add(tmp_path, w0, "cx1", "codex", pane="%44", worktree="/r")
+    engine.assign(plan, tmp_path, w0, "a", "cx1")
+    for alive, want in ((True, "live"), (False, "dead")):
+        w = engine.World(coord=FakeCoord(None), now=lambda: T0 + dt.timedelta(hours=1),
+                         pane_has_session=lambda p, s, a=alive: a)
+        engine.pulse(plan, tmp_path, Config(), w)
+        assert store.read(tmp_path)["items"]["a"]["worker"] == want
+
+
+def test_a_subagent_worker_is_unknown_and_holds_a_slot(tmp_path):
+    plan = parse('[items.a]\ntitle="A"\nkind="build"\nrepo="/r"\noracle="manual"\n'
+                 '[items.b]\ntitle="B"\nkind="build"\nrepo="/r"\noracle="manual"\n',
+                 tmp_path / "plan.toml")
+    w0 = engine.World(now=lambda: T0)
+    engine.worker_add(tmp_path, w0, "sub1", "subagent")
+    engine.assign(plan, tmp_path, w0, "a", "sub1")
+    engine.assign(plan, tmp_path, w0, "b", "sub1")
+    engine.pulse(plan, tmp_path, Config(), engine.World(coord=FakeCoord(set()), now=lambda: T0))
+    doc = store.read(tmp_path)
+    assert doc["items"]["a"]["worker"] == "unknown"
+    assert engine.slots(plan, doc, Config()) == (1, 3)  # one worker, two items, one slot

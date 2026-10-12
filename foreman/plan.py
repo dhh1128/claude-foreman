@@ -51,6 +51,21 @@ class Item:
     pinned: str = ""         # "done" or "abandoned" when the human says so in the file
     ref: str = ""            # free text: a tracker id, an issue, a PR -- shown, never parsed
     base: str = ""           # branch to start the worktree from; default origin's HEAD
+    engine: str = "claude"   # what `launch` starts: a key of config `engines`
+    rests_on: tuple[str, ...] = ()   # pins whose movement makes this item's evidence stale
+
+
+@dataclass(frozen=True)
+class Pin:
+    """Something the plan's evidence rests on: a commit, a version, a lockfile line.
+
+    `cmd` prints its current value. When the value moves, every done item that rests on it is
+    flagged stale until it is verified again. After `freeze`, any movement is itself flagged.
+    """
+    name: str
+    cmd: str
+    repo: str = ""           # where cmd runs; default the plan's directory
+    freeze: dt.date | None = None
 
 
 @dataclass(frozen=True)
@@ -61,6 +76,11 @@ class Plan:
     common_brief: str = ""
     due: dt.date | None = None
     max_workers: int | None = None
+    #: Standing rules for this plan, set by the user mid-run; the PM reads and applies them.
+    rules: str = ""
+    #: Documents the PM itself maintains -- coordination work, as opposed to the items' work.
+    owns: tuple[str, ...] = ()
+    pins: Mapping[str, Pin] = field(default_factory=dict)
 
     def dependents(self, item_id: str) -> list[str]:
         return [i.id for i in self.items.values() if item_id in i.depends_on]
@@ -122,7 +142,7 @@ def parse(text: str, path: Path, name: str | None = None) -> Plan:
     raw_items = doc.get("items", {})
     if not isinstance(raw_items, dict) or not raw_items:
         raise PlanError(f"{path}: no [items.<id>] tables; a plan needs at least one item.")
-    unknown_top = set(doc) - {"plan", "items"}
+    unknown_top = set(doc) - {"plan", "items", "pins"}
     if unknown_top:
         raise PlanError(f"{path}: unknown top-level keys {sorted(unknown_top)}; "
                         "items go under [items.<id>].")
@@ -130,7 +150,7 @@ def parse(text: str, path: Path, name: str | None = None) -> Plan:
     plan_due = _date(meta.get("due"), f"{path} [plan]")
     items: dict[str, Item] = {}
     allowed = {"title", "kind", "repo", "topic", "depends_on", "oracle", "brief", "question",
-               "due", "estimate", "state", "ref", "base"}
+               "due", "estimate", "state", "ref", "base", "engine", "rests_on"}
     for iid, d in raw_items.items():
         where = f"item {iid!r}"
         if not ID_RE.match(iid):
@@ -174,14 +194,38 @@ def parse(text: str, path: Path, name: str | None = None) -> Plan:
             estimate_days=_days(d.get("estimate"), where),
             pinned=pinned, ref=str(d.get("ref", "")).strip(),
             base=str(d.get("base", "")).strip(),
+            engine=str(d.get("engine", "claude")).strip() or "claude",
+            rests_on=_strs(d.get("rests_on"), where, "rests_on"),
         )
 
     mw = meta.get("max_workers")
     if mw is not None and (not isinstance(mw, int) or mw < 1):
         raise PlanError(f"{path} [plan]: max_workers must be a positive integer.")
+    pins: dict[str, Pin] = {}
+    raw_pins = doc.get("pins", {})
+    if not isinstance(raw_pins, dict):
+        raise PlanError(f"{path}: [pins] must be a table of [pins.<name>] tables.")
+    plan_freeze = _date(meta.get("freeze"), f"{path} [plan]")
+    for pname, pd in raw_pins.items():
+        where = f"pin {pname!r}"
+        if not isinstance(pd, dict) or not str(pd.get("cmd", "")).strip():
+            raise PlanError(f"{where}: needs cmd, a shell command that prints the pin's value.")
+        extra = set(pd) - {"cmd", "repo", "freeze"}
+        if extra:
+            raise PlanError(f"{where}: unknown keys {sorted(extra)}; known: cmd, repo, freeze.")
+        pins[pname] = Pin(pname, str(pd["cmd"]).strip(), _path(str(pd.get("repo", "")), base),
+                          _date(pd.get("freeze"), where) or plan_freeze)
+    for it in items.values():
+        for r in it.rests_on:
+            if r not in pins:
+                raise PlanError(f"item {it.id!r} rests on pin {r!r}, which is not in [pins].")
+    rules = str(meta.get("rules", "")).strip()
     plan = Plan(name=name or str(meta.get("name") or base.name), path=path, items=items,
                 common_brief=_path(str(meta.get("common_brief", "")), base),
-                due=plan_due, max_workers=mw)
+                due=plan_due, max_workers=mw,
+                rules=_path(rules, base) if rules else str(base / "rules.md"),
+                owns=tuple(_path(o, base) for o in _strs(meta.get("owns"), f"{path} [plan]", "owns")),
+                pins=pins)
     validate(plan)
     return plan
 

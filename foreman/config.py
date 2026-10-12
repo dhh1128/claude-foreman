@@ -12,6 +12,8 @@ Config: `$FOREMAN_CONFIG`, default `~/.config/foreman/config.toml`. Every key is
     launch_grace_minutes = 3 # a worker this new is not yet expected on the board
     tmux_session = ""        # where worker windows open; default the caller's tmux session
     claude = ["claude"]      # the command that starts a worker, before its own flags
+    [engines]                # other engines an item can name with `engine = "<name>"`
+    codex = ["codex", "--dangerously-bypass-approvals-and-sandbox"]
     escalate = "session-coord"   # or "none": list decisions on the board, file nothing
     idle_minutes = 30        # a leftover process whose CPU has not moved this long is "idle"
     pane_quiet_minutes = 30  # a running worker's pane unchanged this long may be at a prompt
@@ -58,9 +60,15 @@ class Config:
     launch_grace_minutes: float = 3.0
     tmux_session: str = ""
     claude: tuple[str, ...] = ("claude",)
+    #: engine name -> command. `claude` is filled from the `claude` key when absent.
+    engines: dict = field(default_factory=dict)
     escalate: str = "session-coord"
     idle_minutes: float = 30.0       # CPU still this long marks a leftover process as idle
     pane_quiet_minutes: float = 30.0 # a running worker's pane unchanged this long: at a prompt?
+
+    def __post_init__(self):
+        if "claude" not in self.engines:
+            object.__setattr__(self, "engines", {**self.engines, "claude": self.claude})
 
     def cap(self, plan_cap: int | None) -> int:
         return min(self.max_workers, plan_cap) if plan_cap else self.max_workers
@@ -93,6 +101,12 @@ def load() -> Config:
     if mw < 1:
         raise ConfigError("max_workers must be at least 1.")
     kw["max_workers"] = mw
+    engines = kw.get("engines", {})
+    if not isinstance(engines, dict):
+        raise ConfigError("[engines] must map an engine name to a command list.")
+    engines = {k: tuple([v] if isinstance(v, str) else v) for k, v in engines.items()}
+    engines.setdefault("claude", tuple(kw.get("claude", ("claude",))))
+    kw["engines"] = engines
     if kw.get("escalate", "session-coord") not in ("session-coord", "none"):
         raise ConfigError("escalate must be \"session-coord\" or \"none\".")
     return Config(**kw)

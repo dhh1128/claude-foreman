@@ -180,20 +180,81 @@ def cmd_launch(args) -> int:
 def cmd_adopt(args) -> int:
     plan, d = _load(args)
     wt = str(Path(args.worktree).expanduser().resolve()) if args.worktree else ""
-    print(engine.adopt(plan, d, world(), args.item, args.session, args.pane or "", wt,
-                       args.note or ""))
+    print(engine.adopt(plan, d, world(), args.item, args.session or "", args.pane or "", wt,
+                       args.note or "", engine=args.engine, wid=args.worker or ""))
+    return 0
+
+
+def cmd_worker(args) -> int:
+    plan, d = _load(args)
+    if args.action == "add":
+        if not args.wid:
+            raise ConfigError("`worker add` needs an id.")
+        wt = str(Path(args.worktree).expanduser().resolve()) if args.worktree else ""
+        print(engine.worker_add(d, world(), args.wid, args.engine, args.session or "",
+                                args.pane or "", wt, args.note or ""))
+        return 0
+    doc = store.read(d)
+    ws = doc.get("workers", {})
+    if not ws:
+        print("no workers registered.")
+    for wid, w in ws.items():
+        items = ", ".join(w.get("items", [])) or "-"
+        where = " ".join(x for x in (w.get("pane", ""), w.get("worktree", "")) if x)
+        print(f"{wid}  {w.get('engine', '?')}  {w.get('worker', '-')}  items: {items}  {where}")
+    return 0
+
+
+def cmd_assign(args) -> int:
+    plan, d = _load(args)
+    print(engine.assign(plan, d, world(), args.item, args.wid, args.note or ""))
+    it = plan.items[args.item]
+    rec = store.read(d)["items"][args.item]
+    from .launch import worker_prompt
+    print("# Deliver this brief to the worker yourself (session-coord msg for a Claude "
+          "session, the pane for a Codex window, SendMessage for a subagent):")
+    print(worker_prompt(plan, it, rec.get("worktree", ""), False))
+    return 0
+
+
+def cmd_verify(args) -> int:
+    plan, d = _load(args)
+    print(engine.verify(plan, d, world(), args.item, ok=args.ok or "", fail=args.fail or ""))
+    return 0
+
+
+def cmd_rules(args) -> int:
+    plan, _d = _load(args)
+    p = Path(plan.rules)
+    if args.add:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        src = f" ({args.source})" if args.source else ""
+        with open(p, "a") as f:
+            f.write(f"- {engine.utcnow().date()}{src}: {' '.join(args.add.split())}\n")
+        print(f"rule recorded in {p}")
+        return 0
+    try:
+        text = p.read_text()
+    except FileNotFoundError:
+        text = ""
+    print(f"# standing rules for plan {plan.name} ({p})")
+    print(text.rstrip() or "(none yet)")
+    if plan.owns:
+        print("# documents the PM maintains: " + ", ".join(plan.owns))
     return 0
 
 
 def cmd_report(args) -> int:
     plan, d = _load(args)
-    print(engine.report(plan, d, world(), args.item, args.state, args.line))
+    print(engine.report(plan, d, world(), args.item, args.state, args.line,
+                        evidence=args.evidence or ""))
     return 0
 
 
 def cmd_mark(args) -> int:
     plan, d = _load(args)
-    print(engine.mark(plan, d, world(), args.item, args.state, args.note or ""))
+    print(engine.mark(plan, d, world(), args.item, args.state, args.note or "",
+                      evidence=args.evidence or ""))
     return 0
 
 
@@ -269,8 +330,10 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("adopt", help="take on a worker that was started by hand")
     plan_arg(s)
     s.add_argument("item")
-    s.add_argument("--session", required=True, help="the worker's claude session id "
-                   "(`session-coord board --repo <repo> --json` lists it)")
+    s.add_argument("--session", help="the worker's claude session id "
+                   "(`session-coord board --repo <repo> --json` lists it); none for other engines")
+    s.add_argument("--engine", default="claude", help="claude, codex, subagent, ...")
+    s.add_argument("--worker", help="worker id (default: the item id)")
     s.add_argument("--pane", help="its tmux pane, e.g. %%140")
     s.add_argument("--worktree", help="where it works (default <repo>/.worktrees/<topic>)")
     s.add_argument("--note")
@@ -280,12 +343,14 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("item")
     s.add_argument("state", choices=engine.REPORT_STATES)
     s.add_argument("line")
+    s.add_argument("--evidence", help="where the proof lives: a path, a URL, a run id")
     s.set_defaults(func=cmd_report)
     s = sub.add_parser("mark", help="close a manual item, abandon one, or reset it")
     plan_arg(s)
     s.add_argument("item")
     s.add_argument("state", choices=engine.MARK_STATES)
     s.add_argument("--note")
+    s.add_argument("--evidence", help="where the proof lives, when marking done")
     s.set_defaults(func=cmd_mark)
     s = sub.add_parser("attach", help="tell foreman where the PM session is, so reports wake it")
     plan_arg(s)
@@ -296,6 +361,34 @@ def build_parser() -> argparse.ArgumentParser:
     plan_arg(s)
     s.add_argument("item")
     s.set_defaults(func=cmd_show)
+    s = sub.add_parser("worker", help="register an agent someone else started, or list workers")
+    plan_arg(s)
+    s.add_argument("action", choices=["add", "list"])
+    s.add_argument("wid", nargs="?")
+    s.add_argument("--engine", default="claude", help="claude, codex, subagent, ...")
+    s.add_argument("--session", help="a claude session id, for liveness via session-coord")
+    s.add_argument("--pane", help="its tmux pane, for liveness via tmux")
+    s.add_argument("--worktree")
+    s.add_argument("--note")
+    s.set_defaults(func=cmd_worker)
+    s = sub.add_parser("assign", help="give an item to a registered worker; prints its brief")
+    plan_arg(s)
+    s.add_argument("item")
+    s.add_argument("wid")
+    s.add_argument("--note")
+    s.set_defaults(func=cmd_assign)
+    s = sub.add_parser("verify", help="re-establish a done item's evidence (after a pin moved)")
+    plan_arg(s)
+    s.add_argument("item")
+    g = s.add_mutually_exclusive_group()
+    g.add_argument("--ok", metavar="EVIDENCE", help="a check run elsewhere passed; where its proof is")
+    g.add_argument("--fail", metavar="WHY", help="it no longer holds: reopen the item")
+    s.set_defaults(func=cmd_verify)
+    s = sub.add_parser("rules", help="the plan's standing rules, or --add one the user just set")
+    plan_arg(s)
+    s.add_argument("--add", metavar="TEXT")
+    s.add_argument("--source", help="where the rule came from, e.g. the ask id it answered")
+    s.set_defaults(func=cmd_rules)
     s = sub.add_parser("reap", help="list leftover processes; kill those no live worker owns "
                        "(dry run unless --go)")
     plan_arg(s)

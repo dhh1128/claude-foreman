@@ -6,8 +6,17 @@ import datetime as dt
 
 from foreman import engine, render, store
 from foreman.config import Config
+from foreman.coord import Coord
 from foreman.plan import parse
 from foreman.procs import Proc
+
+class NoCoord(Coord):
+    def live_sessions(self, repo):
+        return None
+
+    def ask_add(self, *a, **k):
+        return True, "ok"
+
 
 T0 = dt.datetime(2026, 10, 12, 12, 0, tzinfo=dt.timezone.utc)
 WT = "/r/.worktrees/a"
@@ -19,11 +28,13 @@ def _setup(tmp_path):
                  tmp_path / "plan.toml")
     w0 = engine.World(now=lambda: T0)
     engine.adopt(plan, tmp_path, w0, "a", "s1", "%5", WT, "")
+    with store.transaction(tmp_path) as doc:
+        doc["items"]["a"]["ours"] = True
     return plan
 
 
 def _world(t, ps, activity=None):
-    return engine.World(now=lambda: t, scan=lambda: ps,
+    return engine.World(coord=NoCoord(), now=lambda: t, scan=lambda: ps,
                         pane_activity=lambda p: activity, pane_has_session=lambda p, s: True)
 
 

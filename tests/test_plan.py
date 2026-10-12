@@ -147,3 +147,40 @@ depends_on=["a"]
 def test_malformed_oracle_is_refused_at_load():
     with pytest.raises(PlanError, match="item 'a'.*pr:owner/repo#N"):
         _plan('[items.a]\ntitle="A"\nkind="external"\noracle="merged upstream"\n')
+
+
+def test_pins_rules_owns_engine_and_rests_on():
+    p = _plan("""
+[plan]
+freeze = 2026-10-16
+owns = ["docs/status.md"]
+[pins.core]
+cmd = "git rev-parse HEAD"
+repo = "/r/core"
+[pins.lib]
+cmd = "cat lib.pin"
+freeze = 2026-10-01
+[items.a]
+title = "A"
+kind = "build"
+repo = "/r/a"
+oracle = "manual"
+engine = "codex"
+rests_on = ["core", "lib"]
+""")
+    assert p.items["a"].engine == "codex" and p.items["a"].rests_on == ("core", "lib")
+    assert p.pins["core"].freeze == dt.date(2026, 10, 16)  # inherited from [plan]
+    assert p.pins["lib"].freeze == dt.date(2026, 10, 1)
+    assert p.pins["core"].repo == "/r/core"
+    assert p.rules == "/plans/x/rules.md"
+    assert p.owns == ("/plans/x/docs/status.md",)
+
+
+def test_resting_on_an_undeclared_pin_is_refused():
+    with pytest.raises(PlanError, match="rests on pin 'core'"):
+        _plan('[items.a]\ntitle="A"\nkind="external"\noracle="manual"\nrests_on="core"\n')
+
+
+def test_a_pin_needs_a_command():
+    with pytest.raises(PlanError, match="needs cmd"):
+        _plan('[pins.core]\nrepo="/r"\n[items.a]\ntitle="A"\nkind="external"\noracle="manual"\n')

@@ -49,6 +49,21 @@ kind = "decision"                 # you decide; foreman files one ask and never 
 question = "Ship the app bump in 1.4 or hold it for 2.0?"
 ```
 
+A plan may also declare pins its evidence rests on, and the documents the PM itself maintains:
+
+```toml
+[plan]
+freeze = 2026-10-16
+owns = ["/home/me/code/app/docs/status.md"]
+
+[pins.core]
+cmd = "git -C /home/me/code/app show HEAD:pyproject.toml | grep -o 'core.git@[0-9a-f]*'"
+
+[items.release-check]
+rests_on = ["core"]               # a moved pin makes this item's evidence stale
+engine = "codex"                  # launched with config's [engines] codex command
+```
+
 Oracles are `pr:owner/repo#N` (merged), `cmd:<shell>` (exits 0), `file:<path>` (exists), or `manual` (closed with `foreman mark`). A list means all must hold. Cycles, dangling dependencies and malformed oracles are refused when the plan loads.
 
 ## Commands
@@ -60,6 +75,10 @@ foreman launch --ready         what would launch now; prints the exact commands,
 foreman launch --ready --go    create worktrees, open tmux windows, start workers
 foreman launch --relaunch <id> --go   resume a dead worker's conversation
 foreman adopt <id> --session <sid>   take on a worker started by hand
+foreman worker add <wid> --engine codex|subagent|claude [--pane] [--session]
+foreman assign <id> <wid>      give an item to a registered worker; prints its brief
+foreman verify <id> [--ok EVIDENCE | --fail WHY]   after a pin moved
+foreman rules [--add TEXT --source ASK]   the plan's standing rules
 foreman report <id> <running|review|done|stuck> "<line>"   for workers
 foreman mark <id> <done|abandoned|reset> --note "<why>"
 foreman attach --target <pm>   let worker reports wake the PM session

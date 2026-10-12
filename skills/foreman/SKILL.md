@@ -7,11 +7,23 @@ description: Run a cross-repo plan of work as its project manager — hold the d
 
 **First, once per session: run `foreman addendum`.** If it prints anything, those are this machine's local rules — the user's trackers, merge discipline and naming — and where they are more specific than this file, they win.
 
-## What the PM is, and what it is not
+## What the PM does, and what it hands off
 
-The PM holds the plan, starts workers when an item's dependencies are done, watches them, and escalates. **It does nothing else.** It never edits code, never merges, never posts to GitHub or anywhere else, and never decides an intent-level question. Workers own their branches and pull requests. A `decision` item exists so that "the user decides this" is a structural fact in the plan rather than a habit the PM has to remember.
+**The PM does coordination work; execution goes to workers.** Coordination is anything that needs the view across workers: sequencing, relaying review findings to the worker that must act on them, applying the user's standing rules to unblock a stuck merge, keeping the documents the plan says the PM owns (`foreman rules` lists them), and verifying what workers claim. Execution is anything that blocks for long or fills context: editing code, test and fix loops, waiting on CI inside a merge tool, the review rounds themselves. Hand those to a worker, including a short-lived one you register for the errand (`foreman worker add`, then `assign`).
 
-The reason: a PM that starts doing the work stops sequencing, and nobody notices the queue stall behind it.
+The reason is that your context is what the whole plan runs on. A PM sitting in a forty-minute CI wait is not sequencing, and the queue stalls behind it unnoticed; a PM whose context fills with test output gets compacted and loses the thread. And you check every item's exit condition: if you also did the work, you would be grading your own homework.
+
+Two lines that do not move. **The `foreman` command never does work**; it records, checks and launches. **You never decide an intent-level question**; a `decision` item exists so that "the user decides this" is structural. **A hand-merge happens only when a standing rule names the case.**
+
+## Standing rules
+
+When the user sets a rule mid-run — "hand-merge when the gate objects only on scope", "use Codex while the Claude budget is thin" — record it at once, where it survives you:
+
+```
+foreman rules --add "<the rule, in a sentence>" --source <the ask it answered>
+```
+
+Read `foreman rules` once per session and whenever you are about to act on one. A rule that lives only in your context dies at the next compaction, and the user then has to set it again.
 
 ## State is on disk, never in your context
 
@@ -42,6 +54,18 @@ foreman launch --ready --go     # creates worktrees, opens tmux windows, starts 
 
 **The first launches of any plan are dry runs, shown to the user.** Real launches start only when the user has said the dry run looks right. After that, launching ready items is your job and needs no further permission unless the addendum says otherwise.
 
+## Workers
+
+A worker is any agent that can take an item: a Claude session foreman launched, one the user started, a Codex or other engine's window, or a subagent you run yourself. One worker may carry several items in turn, and keeps its context between them, which makes the second re-pin faster than the first. Register an agent foreman did not launch, then assign items to it:
+
+```
+foreman worker add repin-a --engine subagent --note "re-pin subagent"
+foreman worker add cx1 --engine codex --pane %144 --worktree <tree>
+foreman assign <item> <worker>     # prints the brief; you deliver it
+```
+
+foreman watches what each kind allows: session-coord's board for a Claude session, the pane for a window, nothing for a subagent — report for it yourself. The board lists idle workers so you can reuse one before starting another. An item can name its engine (`engine = "codex"`) and `launch` starts that engine with the command config gives it.
+
 **A worker someone already started by hand** is adopted rather than relaunched, so foreman watches it like its own: find its session id with `session-coord board --repo <repo> --json`, then `foreman adopt <id> --session <sid> --pane <%N> --worktree <where it works>`. Nothing is launched.
 
 The cap on live workers comes from config; `foreman` refuses past it and ready items queue. Do not try to get round it by launching by hand.
@@ -56,6 +80,9 @@ The cap on live workers comes from config; `foreman` refuses past it and ready i
 - **Late, or overdue.** The board gives the chain that cannot finish in time. Tell the user once, with the chain and the number of days, and what you would cut.
 - **Leftover processes.** Something a worker started is still running, orphaned or in a deleted worktree; the line names the pids. If the item is live, tell its worker to clean up under its own worktree. `foreman reap` lists what no live worker can own (deleted worktrees, finished items) and `foreman reap --go` kills those; it never kills anything a live worker might be waiting on.
 - **Pane quiet.** A running worker's window has not changed for a while and it has not said it is waiting: it may be sitting at a prompt. Message it, or tell the user which window.
+- **Base moved.** When an item lands, pulse names the items still in flight in the same repo. Tell their workers to rebase before they open or update a PR.
+- **Evidence stale.** A pin the item rests on moved. Re-establish it: `foreman verify <id>` reruns the oracle; for an expensive check, have a worker run it and record `foreman verify <id> --ok <where the proof is>`, or `--fail <why>` to reopen the item. A pin moving after its freeze is the user's to know about at once.
+- **Reopened.** Its evidence failed; it is ready again and needs a worker.
 - **Merges queue in a repo.** Two items will land in one repo. Tell those workers to serialize with `session-coord lock merge`. foreman has no lock of its own, on purpose.
 - **Decision not escalated.** The ask could not be filed; the line says why. Fix that, or file it yourself.
 
@@ -79,7 +106,7 @@ You were started with a prompt naming your plan and item. Read the briefs it nam
 
 - `running` at each real milestone, not every step;
 - `review` with the PR URL once it is open;
-- `done` when you believe the work is finished — foreman checks the exit condition itself, so a `done` before the merge leaves the item in review, which is correct;
+- `done` when you believe the work is finished — foreman checks the exit condition itself, so a `done` before the merge leaves the item in review, which is correct. Add `--evidence <path or URL>` naming where the proof lives (a run log, an evidence file, the PR);
 - `waiting` when you pause for the user — a decision node to approve, a question you filed — naming what they must decide and any ask ids;
 - `stuck` with what you need, when you cannot go on for any other reason.
 

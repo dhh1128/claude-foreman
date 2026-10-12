@@ -67,6 +67,12 @@ def summary(plan: Plan, doc: dict[str, Any], cfg: Config, now: dt.datetime) -> d
                          f"({', '.join(why)}) pids {pids}; {who}")
     for iid in engine.stalled(plan, doc, cfg, now):
         attention.append(f"{iid}: no report for {_ago(recs[iid]['last_report'], now)}")
+    for iid in plan.items:
+        r = recs.get(iid, {})
+        if r.get("stale") and sts[iid] == "done":
+            attention.append(f"{iid}: evidence stale, {r['stale']} -> `foreman verify {iid}`")
+        if r.get("reopened") and sts[iid] not in graph.FINAL:
+            attention.append(f"{iid}: reopened, {_short(r['reopened'], 60)}")
     for iid, bad in graph.stranded(plan, sts).items():
         attention.append(f"{iid}: stranded behind abandoned {', '.join(bad)}")
     for rk in graph.risks(plan, sts, now.date()):
@@ -84,9 +90,13 @@ def summary(plan: Plan, doc: dict[str, Any], cfg: Config, now: dt.datetime) -> d
     for iid in plan.items:
         if sts[iid] in graph.ACTIVE:
             r = recs.get(iid, {})
-            active.append(f"{iid} {sts[iid]} {r.get('worker', '-')} "
+            who = f"[{r['wid']}] " if r.get("wid") and r["wid"] != iid else ""
+            active.append(f"{iid} {who}{sts[iid]} {r.get('worker', '-')} "
                           f"{_ago(r.get('last_report', ''), now)}: \"{_short(r.get('last_line', ''), 60)}\"")
     launch = graph.launchable(plan, sts)
+    idle = [f"{wid} ({w.get('engine', '?')})" for wid, w in doc.get("workers", {}).items()
+            if w.get("worker") != "dead"
+            and not any(sts.get(i) in graph.ACTIVE for i in w.get("items", []))]
     waiting = []
     for iid, it in plan.items.items():
         if it.kind != "build" and sts[iid] == "ready":
@@ -102,7 +112,7 @@ def summary(plan: Plan, doc: dict[str, Any], cfg: Config, now: dt.datetime) -> d
               for s in ("done", "running", "review", "ready", "blocked", "abandoned")}
     return {"plan": plan.name, "date": now.date().isoformat(), "workers": [used, cap],
             "counts": counts, "attention": attention, "active": active,
-            "launchable": launch, "slots": max(cap - used, 0), "waiting": waiting,
+            "launchable": launch, "idle_workers": idle, "slots": max(cap - used, 0), "waiting": waiting,
             "blocked": blocked, "done": [i for i in plan.items if sts[i] == "done"],
             "states": sts}
 
@@ -123,6 +133,8 @@ def board(plan: Plan, doc: dict[str, Any], cfg: Config, now: dt.datetime) -> str
         n = s["slots"]
         out.append(f"ready to launch ({n} slot{'s' if n != 1 else ''} free): "
                    + ", ".join(s["launchable"]))
+    if s["idle_workers"]:
+        out.append("idle workers, assignable: " + ", ".join(s["idle_workers"]))
     if s["waiting"]:
         out.append("waiting: " + ", ".join(s["waiting"]))
     if s["blocked"]:
@@ -150,10 +162,13 @@ def show(plan: Plan, doc: dict[str, Any], iid: str, events: list[dict[str, Any]]
         lines.append(f"  question {it.question}")
     if it.due:
         lines.append(f"  due {it.due}" + (f", estimate {it.estimate_days:g}d" if it.estimate_days else ""))
-    for k in ("session", "pane", "worktree", "worker", "launched", "last_report", "last_line",
-              "stuck", "waiting", "ask", "note"):
+    for k in ("wid", "session", "pane", "worktree", "worker", "launched", "last_report",
+              "last_line", "stuck", "waiting", "stale", "reopened", "ask", "note"):
         if r.get(k):
             lines.append(f"  {k} {r[k]}")
+    for e in r.get("evidence", [])[-3:]:
+        pins = ", ".join(f"{k}={v}" for k, v in e.get("pins", {}).items())
+        lines.append(f"  evidence {e['at']} ({e['by']}): {e['ref']}" + (f" at {pins}" if pins else ""))
     if r.get("oracle"):
         lines.append(f"  oracle said {r['oracle'].get('ok')} at {r['oracle'].get('checked')}: "
                      f"{r['oracle'].get('detail')}")

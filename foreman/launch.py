@@ -45,6 +45,7 @@ class Launch:
     branch: str
     resume: bool
     steps: tuple[Step, ...] = field(default=())
+    token: str = ""          # carried in the wrapper's argv; proves the worker by its pane
 
 
 def worker_prompt(plan: Plan, it: Item, worktree: str, resume: bool) -> str:
@@ -75,7 +76,7 @@ def worker_prompt(plan: Plan, it: Item, worktree: str, resume: bool) -> str:
 
 def plan_launch(plan: Plan, it: Item, *, tmux_session: str, claude: Sequence[str],
                 default_branch: str, worktree_exists: bool, branch_exists: bool,
-                session: str | None = None, worktree: str = "") -> Launch:
+                session: str | None = None, worktree: str = "", engine: str = "claude") -> Launch:
     """The exact commands for one launch. `session` given means resume that conversation.
 
     `worktree` names a tree the worker already used -- an adopted worker may have run in the
@@ -99,7 +100,10 @@ def plan_launch(plan: Plan, it: Item, *, tmux_session: str, claude: Sequence[str
             steps.append(Step(("git", "-C", repo, "worktree", "add", wt, "-b", it.topic,
                                f"origin/{base}"), f"new branch {it.topic} from origin/{base}"))
     target = f"{tmux_session}:" if tmux_session else ""
-    cmd = list(claude) + (["--resume", sid] if resume else ["--session-id", sid])
+    if engine == "claude":
+        cmd = list(claude) + (["--resume", sid] if resume else ["--session-id", sid])
+    else:
+        cmd = list(claude)  # other engines take the prompt as their first argument
     cmd.append(worker_prompt(plan, it, wt, resume))
     tmux = ["tmux", "new-window", "-d", "-P", "-F", "#{pane_id}"]
     if target:
@@ -109,10 +113,13 @@ def plan_launch(plan: Plan, it: Item, *, tmux_session: str, claude: Sequence[str
     # never showed on its board, and the record was swept as stale (first real plan,
     # 2026-10-12). The trailing exec leaves a shell in the worktree when claude exits, which is
     # also what a hand-started window looks like.
-    shell = ["sh", "-c", '"$@"; exec "${SHELL:-/bin/sh}" -l', "foreman-worker", *cmd]
+    # $0 carries a token that lives exactly as long as the engine does: when the engine exits,
+    # the exec replaces this argv. That proves liveness by pane for engines session-coord
+    # cannot see.
+    shell = ["sh", "-c", '"$@"; exec "${SHELL:-/bin/sh}" -l', f"foreman-worker:{sid}", *cmd]
     tmux += ["-n", it.topic, "-c", wt, *shell]
     steps.append(Step(tuple(tmux), "open a window running the worker", capture="pane"))
-    return Launch(it.id, sid, wt, it.topic, resume, tuple(steps))
+    return Launch(it.id, sid, wt, it.topic, resume, tuple(steps), token=sid)
 
 
 # --- facts about the repo, gathered before planning ---------------------------------------

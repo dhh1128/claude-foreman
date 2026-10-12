@@ -115,16 +115,25 @@ def pulse(plan: Plan, plan_dir: Path, cfg: Config, world: World) -> dict[str, An
             if it.repo not in live_by_repo:
                 live_by_repo[it.repo] = world.coord.live_sessions(it.repo)
 
+    pin_values: dict[str, str | None] = {}
+    for name, pin in plan.pins.items():
+        cwd = pin.repo if pin.repo and Path(pin.repo).is_dir() else str(plan_dir)
+        try:
+            rc, out = world.oracle_run(["sh", "-c", pin.cmd], cwd, oracles.CMD_TIMEOUT)
+            pin_values[name] = out.strip() if rc == 0 and out.strip() else None
+        except Exception:  # noqa: BLE001 -- any failure to run is "could not look"
+            pin_values[name] = None
+
     changes: list[str] = []
     with store.transaction(plan_dir) as doc:
         for iid, v in verdicts.items():
             rec = _rec(doc, iid)
             prev = rec.get("oracle", {}).get("ok")
             rec["oracle"] = {"ok": v.ok, "detail": v.detail, "checked": _iso(now)}
-            if v.ok is True and rec.get("state") not in graph.FINAL:
+            if v.ok is True and rec.get("state") not in graph.FINAL and not rec.get("reopened"):
                 rec["state"] = "done"
                 _clear_flags(rec)
-                changes.append(f"{iid} done: {v.detail}")
+                changes.append(f"{iid} done: {v.detail}" + _ripple(plan, doc, iid))
                 _event(plan_dir, now, iid, "oracle", ok=True, detail=v.detail)
             elif v.ok != prev:
                 _event(plan_dir, now, iid, "oracle", ok=v.ok, detail=v.detail)
@@ -133,34 +142,104 @@ def pulse(plan: Plan, plan_dir: Path, cfg: Config, world: World) -> dict[str, An
         grace = dt.timedelta(minutes=cfg.launch_grace_minutes)
         for iid, it in plan.items.items():
             rec = doc["items"].get(iid, {})
-            if sts[iid] not in graph.ACTIVE or not rec.get("session"):
+            if sts[iid] not in graph.ACTIVE or not (rec.get("session") or rec.get("pane")
+                                                    or rec.get("wid")):
                 continue
-            live = live_by_repo.get(it.repo)
-            launched = _parse(rec.get("launched", ""))
-            in_pane = (world.pane_has_session(rec["pane"], rec["session"])
-                       if rec.get("pane") and (live is None or rec["session"] not in live)
-                       else None)
-            if live is not None and rec["session"] in live:
-                worker = "live"
-            elif in_pane:
-                worker = "live"
-            elif live is None:
-                worker = "unknown"
-            elif launched and now - launched < grace:
-                worker = "starting"
-            else:
-                worker = "dead"
+            worker = _liveness(rec, live_by_repo.get(it.repo) if rec.get("session") else None,
+                               world, now, grace)
             if worker != rec.get("worker"):
                 if worker == "dead":
                     changes.append(f"{iid} worker gone")
                 _event(plan_dir, now, iid, "worker", worker=worker)
             rec["worker"] = worker
+            if rec.get("wid") in doc.get("workers", {}):
+                doc["workers"][rec["wid"]]["worker"] = worker
 
+        changes += _pins(plan, plan_dir, doc, pin_values, now)
         if cfg.escalate == "session-coord":
             changes += _escalate(plan, plan_dir, doc, sts, world, now)
         _quiet_panes(plan, doc, sts, world)
         changes += _leftovers(plan, doc, graph.states(plan, doc), cfg, world, now)
     return {"changes": changes}
+
+
+def _liveness(rec: dict[str, Any], live: set[str] | None, world: World, now: dt.datetime,
+              grace: dt.timedelta) -> str:
+    """live, starting, dead or unknown, from whatever proof this worker's kind allows.
+
+    - session-coord's board, for any worker with a Claude session id;
+    - the recorded pane, for a worker foreman launched: its argv carries a token
+      (`foreman-worker:<id>`) that disappears when the engine exits, so its absence is evidence;
+    - for a worker someone else started with no session id (a Codex window), only whether its
+      pane still exists;
+    - a subagent has neither, and is `unknown` unless the PM reports for it.
+    """
+    sid, pane = rec.get("session", ""), rec.get("pane", "")
+    if not sid and not pane:
+        return "unknown"
+    token = (rec.get("token") or sid) if rec.get("ours") else ("" if not sid else None)
+    in_pane = world.pane_has_session(pane, token) if pane and token is not None else None
+    if (sid and live is not None and sid in live) or in_pane:
+        return "live"
+    if in_pane is None and (not sid or live is None):
+        return "unknown"
+    launched = _parse(rec.get("launched", ""))
+    if launched and now - launched < grace:
+        return "starting"
+    return "dead"
+
+
+def _ripple(plan: Plan, doc: dict[str, Any], iid: str) -> str:
+    """When an item lands, the other items in flight in its repo have a moved base."""
+    repo = plan.items[iid].repo.rstrip("/")
+    if not repo:
+        return ""
+    sts = graph.states(plan, doc)
+    others = [o for o, it in plan.items.items()
+              if o != iid and it.repo.rstrip("/") == repo and sts[o] in graph.ACTIVE]
+    return f"; base moved for {', '.join(others)} in {repo}" if others else ""
+
+
+def _pins(plan: Plan, plan_dir: Path, doc: dict[str, Any], values: dict[str, str | None],
+          now: dt.datetime) -> list[str]:
+    out = []
+    pins = doc.setdefault("pins", {})
+    for name, value in values.items():
+        if value is None:
+            continue  # could not look: keep the last value, never treat it as a move
+        prev = pins.get(name, {}).get("value")
+        if prev == value:
+            pins[name]["checked"] = _iso(now)
+            continue
+        pins[name] = {"value": value, "since": _iso(now), "checked": _iso(now),
+                      **({"previous": prev} if prev else {})}
+        if prev is None:
+            continue  # first sight is a baseline, not a move
+        pin = plan.pins[name]
+        frozen = pin.freeze is not None and now.date() > pin.freeze
+        stale = []
+        for iid, it in plan.items.items():
+            rec = doc["items"].get(iid, {})
+            if name in it.rests_on and graph.states(plan, doc)[iid] == "done":
+                rec["stale"] = f"pin {name} moved {prev} -> {value} on {now.date()}"
+                stale.append(iid)
+        _event(plan_dir, now, "", "pin", pin=name, previous=prev, value=value, stale=stale,
+               after_freeze=frozen)
+        out.append(f"pin {name} moved {prev} -> {value}"
+                   + (f" AFTER ITS FREEZE ({pin.freeze})" if frozen else "")
+                   + (f"; evidence now stale for {', '.join(stale)} (`foreman verify <id>`)"
+                      if stale else ""))
+    return out
+
+
+def _pin_snapshot(doc: dict[str, Any]) -> dict[str, str]:
+    return {k: v.get("value", "") for k, v in doc.get("pins", {}).items()}
+
+
+def _add_evidence(doc: dict[str, Any], rec: dict[str, Any], ref: str, by: str,
+                  now: dt.datetime) -> None:
+    rec.setdefault("evidence", []).append({"at": _iso(now), "ref": ref, "by": by,
+                                           "pins": _pin_snapshot(doc)})
 
 
 def trees(plan: Plan, doc: dict[str, Any], sts: dict[str, str]) -> dict[str, tuple[str, str]]:
@@ -237,10 +316,13 @@ def _escalate(plan: Plan, plan_dir: Path, doc: dict[str, Any], sts: dict[str, st
 def slots(plan: Plan, doc: dict[str, Any], cfg: Config) -> tuple[int, int]:
     """(live workers, cap). A worker known to be dead does not hold a slot; unknown does."""
     sts = graph.states(plan, doc)
-    used = sum(1 for iid in plan.items
-               if sts[iid] in graph.ACTIVE and doc["items"].get(iid, {}).get("session")
-               and doc["items"][iid].get("worker") != "dead")
-    return used, cfg.cap(plan.max_workers)
+    busy = set()
+    for iid in plan.items:
+        rec = doc["items"].get(iid, {})
+        if (sts[iid] in graph.ACTIVE and (rec.get("session") or rec.get("pane") or rec.get("wid"))
+                and rec.get("worker") != "dead"):
+            busy.add(rec.get("wid") or iid)  # one worker carrying two items holds one slot
+    return len(busy), cfg.cap(plan.max_workers)
 
 
 def prepare(plan: Plan, plan_dir: Path, cfg: Config, world: World, ids: list[str],
@@ -279,9 +361,15 @@ def prepare(plan: Plan, plan_dir: Path, cfg: Config, world: World, ids: list[str
         wt = kept or f"{it.repo.rstrip('/')}/.worktrees/{it.topic}"
         exists = launch_mod.worktree_exists(wt)
         default = it.base or ("" if exists else launch_mod.default_branch(it.repo, world.run))
+        if it.engine not in cfg.engines:
+            raise EngineError(f"{iid} wants engine {it.engine!r}, which config does not define; "
+                              f"known: {', '.join(sorted(cfg.engines))}. Add it under [engines].")
+        if relaunch and it.engine != "claude":
+            session = None  # only claude can resume a conversation; others start over
         out.append(launch_mod.plan_launch(
             plan, it, tmux_session=cfg.tmux_session or world.tmux_session(),
-            claude=cfg.claude, default_branch=default, worktree_exists=exists,
+            claude=cfg.engines[it.engine], engine=it.engine,
+            default_branch=default, worktree_exists=exists,
             branch_exists=False if exists else launch_mod.branch_exists(it.repo, it.topic, world.run),
             session=session, worktree=kept))
     return out
@@ -304,10 +392,18 @@ def commit_launch(plan: Plan, plan_dir: Path, cfg: Config, world: World,
             raise EngineError(f"{used} of {cap} workers are live; {ln.item} waits for a slot.")
         got = launch_mod.execute(ln, world.run)
         rec = _rec(doc, ln.item)
-        rec.update({"state": rec.get("state") if ln.resume else "running",
-                    "session": ln.session, "pane": got.get("pane", ""),
+        engine = plan.items[ln.item].engine
+        rec.update({"state": rec.get("state") if ln.resume or rec.get("state") in graph.ACTIVE
+                    else "running",
+                    "session": ln.session if engine == "claude" else ln.token,
+                    "pane": got.get("pane", ""), "ours": True, "wid": rec.get("wid") or ln.item,
                     "worktree": ln.worktree, "launched": _iso(now), "last_report": _iso(now),
                     "worker": "starting"})
+        if engine != "claude":
+            rec["session"] = ""
+            rec["token"] = ln.token
+        _register_worker(doc, rec["wid"], engine, rec.get("session", ""), rec["pane"],
+                         ln.worktree, ln.item, ours=True, token=ln.token)
         rec["last_line"] = "relaunched" if ln.resume else "launched"
         store.write(plan_dir, doc)
         _event(plan_dir, now, ln.item, "relaunch" if ln.resume else "launch",
@@ -315,9 +411,80 @@ def commit_launch(plan: Plan, plan_dir: Path, cfg: Config, world: World,
     return got
 
 
+def _register_worker(doc: dict[str, Any], wid: str, engine: str, session: str, pane: str,
+                     worktree: str, item: str = "", ours: bool = False, token: str = "",
+                     note: str = "") -> dict[str, Any]:
+    w = doc.setdefault("workers", {}).setdefault(wid, {"items": []})
+    w.update({k: v for k, v in {"engine": engine, "session": session, "pane": pane,
+                                "worktree": worktree, "note": note, "token": token}.items() if v})
+    if ours:
+        w["ours"] = True
+    if item and item not in w["items"]:
+        w["items"].append(item)
+    return w
+
+
+def worker_add(plan_dir: Path, world: World, wid: str, engine: str, session: str = "",
+               pane: str = "", worktree: str = "", note: str = "") -> str:
+    """Register an agent someone else started -- a Claude session, a Codex window, a subagent
+    the PM runs -- so items can be assigned to it and foreman can watch what it can."""
+    if not wid or not wid.replace("-", "").replace("_", "").replace(".", "").isalnum():
+        raise EngineError(f"worker id {wid!r}: use letters, digits, '-', '_' and '.'.")
+    with store.transaction(plan_dir) as doc:
+        _register_worker(doc, wid, engine, session, pane, worktree, note=note)
+        _event(plan_dir, world.now(), "", "worker-add", wid=wid, engine=engine, session=session,
+               pane=pane, worktree=worktree)
+    proofs = ("session-coord's board" if session else "") + (" and " if session and pane else "") \
+        + ("its pane" if pane else "")
+    return f"worker {wid} ({engine}) registered; liveness from {proofs or 'reports only'}"
+
+
+def assign(plan: Plan, plan_dir: Path, world: World, iid: str, wid: str, note: str = "") -> str:
+    """Give an item to a registered worker. foreman records it; the PM delivers the brief,
+    because how to reach a worker depends on what it is."""
+    it = plan.items.get(iid)
+    if it is None:
+        raise EngineError(f"no item {iid!r} in plan {plan.name!r}.")
+    if it.kind != "build":
+        raise EngineError(f"{iid} is a {it.kind} item; only build items have workers.")
+    now = world.now()
+    with store.transaction(plan_dir) as doc:
+        w = doc.get("workers", {}).get(wid)
+        if w is None:
+            raise EngineError(f"no worker {wid!r}; register it with `foreman worker add`.")
+        sts = graph.states(plan, doc)
+        rec = _rec(doc, iid)
+        if sts[iid] in graph.FINAL:
+            raise EngineError(f"{iid} is already {sts[iid]}.")
+        if rec.get("wid") and rec["wid"] != wid and rec.get("worker") != "dead":
+            raise EngineError(f"{iid} already has a worker ({rec['wid']}, "
+                              f"{rec.get('worker', 'unchecked')}); `foreman mark {iid} reset` "
+                              "first if that one is gone.")
+        if (rec.get("session") and not rec.get("wid") and rec["session"] != w.get("session")
+                and rec.get("worker") != "dead"):
+            raise EngineError(f"{iid} already has a worker ({rec['session']}); "
+                              f"`foreman mark {iid} reset` first if that one is gone.")
+        rec.update({"state": rec.get("state") if sts[iid] in graph.ACTIVE else "running",
+                    "wid": wid, "session": w.get("session", ""), "pane": w.get("pane", ""),
+                    "worktree": w.get("worktree") or f"{it.repo.rstrip('/')}/.worktrees/{it.topic}",
+                    "launched": _iso(now), "last_report": _iso(now), "worker": "starting",
+                    "last_line": note or f"assigned to {wid}"})
+        if w.get("ours"):
+            rec["ours"] = True
+        rec.pop("reopened", None)
+        if iid not in w["items"]:
+            w["items"].append(iid)
+        _event(plan_dir, now, iid, "assign", wid=wid, note=note)
+    msg = f"{iid} assigned to {wid} ({w.get('engine', '?')})"
+    if not Path(rec["worktree"]).is_dir():
+        msg += (f"\nwarning: {rec['worktree']} does not exist yet. A relaunch would create it "
+                "from origin; register the worker again with --worktree once it has moved.")
+    return msg
+
+
 def adopt(plan: Plan, plan_dir: Path, world: World, iid: str, session: str, pane: str,
-          worktree: str, note: str) -> str:
-    """Take on a worker someone started by hand, so foreman watches it like its own.
+          worktree: str, note: str, engine: str = "claude", wid: str = "") -> str:
+    """Register a worker someone started by hand and assign it this item, in one step.
 
     Nothing is launched. The cap is not enforced, because the worker already exists; refusing
     would only make the record disagree with the world.
@@ -327,33 +494,26 @@ def adopt(plan: Plan, plan_dir: Path, world: World, iid: str, session: str, pane
         raise EngineError(f"no item {iid!r} in plan {plan.name!r}.")
     if it.kind != "build":
         raise EngineError(f"{iid} is a {it.kind} item; only build items have workers.")
-    now = world.now()
-    with store.transaction(plan_dir) as doc:
-        sts = graph.states(plan, doc)
-        rec = _rec(doc, iid)
-        if sts[iid] in graph.FINAL:
-            raise EngineError(f"{iid} is already {sts[iid]}.")
-        if rec.get("session") and rec["session"] != session and rec.get("worker") != "dead":
-            raise EngineError(f"{iid} already has a worker ({rec['session']}, "
-                              f"{rec.get('worker', 'unchecked')}); `foreman mark {iid} reset` "
-                              "first if that one is gone.")
-        rec.update({"state": rec.get("state") if sts[iid] in graph.ACTIVE else "running",
-                    "session": session, "pane": pane,
-                    "worktree": worktree or f"{it.repo.rstrip('/')}/.worktrees/{it.topic}",
-                    "launched": _iso(now), "last_report": _iso(now), "worker": "starting",
-                    "last_line": note or "adopted"})
-        _event(plan_dir, now, iid, "adopt", session=session, pane=pane,
-               worktree=rec["worktree"], note=note)
-    msg = f"{iid} adopted: session {session}" + (f", pane {pane}" if pane else "")
-    if not Path(rec["worktree"]).is_dir():
-        msg += (f"\nwarning: {rec['worktree']} does not exist yet. A relaunch would create it "
-                "from origin; re-adopt with --worktree once the worker has moved.")
-    return msg
+    wid = wid or iid
+    wt = worktree or f"{it.repo.rstrip('/')}/.worktrees/{it.topic}"
+    doc = store.read(plan_dir)
+    rec = doc["items"].get(iid, {})
+    cur = rec.get("wid") or (iid if rec.get("session") else "")
+    if cur and rec.get("session") != session and rec.get("worker") != "dead" \
+            and graph.states(plan, doc)[iid] in graph.ACTIVE:
+        raise EngineError(f"{iid} already has a worker ({rec.get('session') or cur}, "
+                          f"{rec.get('worker', 'unchecked')}); `foreman mark {iid} reset` first "
+                          "if that one is gone.")
+    worker_add(plan_dir, world, wid, engine, session, pane, wt, note)
+    out = assign(plan, plan_dir, world, iid, wid, note or "adopted")
+    return out.replace(f"{iid} assigned to", f"{iid} adopted: worker", 1) + \
+        (f", session {session}" if session else "") + (f", pane {pane}" if pane else "")
 
 
 # --- report, mark, attach -----------------------------------------------------------------
 
-def report(plan: Plan, plan_dir: Path, world: World, iid: str, state: str, line: str) -> str:
+def report(plan: Plan, plan_dir: Path, world: World, iid: str, state: str, line: str,
+           evidence: str = "") -> str:
     """A worker's word. `done` is checked against the oracle and is not believed alone."""
     if iid not in plan.items:
         raise EngineError(f"no item {iid!r} in plan {plan.name!r}.")
@@ -376,7 +536,9 @@ def report(plan: Plan, plan_dir: Path, world: World, iid: str, state: str, line:
             if verdict is not None and verdict.ok is True:
                 rec["state"] = "done"
                 _clear_flags(rec)
-                outcome = f"{iid} done; oracle agrees ({verdict.detail})"
+                rec.pop("reopened", None)
+                rec.pop("stale", None)
+                outcome = f"{iid} done; oracle agrees ({verdict.detail})" + _ripple(plan, doc, iid)
             else:
                 rec["state"] = "review"
                 rec["claimed_done"] = True
@@ -390,7 +552,10 @@ def report(plan: Plan, plan_dir: Path, world: World, iid: str, state: str, line:
             outcome = f"{iid} {state}"
         rec["last_report"] = _iso(now)
         rec["last_line"] = line
-        _event(plan_dir, now, iid, "report", state=state, line=line, outcome=outcome)
+        if evidence:
+            _add_evidence(doc, rec, evidence, "worker report", now)
+        _event(plan_dir, now, iid, "report", state=state, line=line, outcome=outcome,
+               **({"evidence": evidence} if evidence else {}))
         pm = dict(doc.get("pm", {}))
     from_pm = bool(pm.get("pane")) and pm.get("pane") == world.pane()
     if state in ("review", "done") + FLAGS and pm.get("repo") and pm.get("target") and not from_pm:
@@ -400,7 +565,8 @@ def report(plan: Plan, plan_dir: Path, world: World, iid: str, state: str, line:
     return outcome
 
 
-def mark(plan: Plan, plan_dir: Path, world: World, iid: str, state: str, note: str) -> str:
+def mark(plan: Plan, plan_dir: Path, world: World, iid: str, state: str, note: str,
+         evidence: str = "") -> str:
     """A human or the PM overriding the record: close a manual item, abandon, or reset."""
     if iid not in plan.items:
         raise EngineError(f"no item {iid!r} in plan {plan.name!r}.")
@@ -414,10 +580,56 @@ def mark(plan: Plan, plan_dir: Path, world: World, iid: str, state: str, note: s
         else:
             rec["state"] = state
             _clear_flags(rec)
+            rec.pop("reopened", None)
+            rec.pop("stale", None)
         rec = doc["items"][iid]
         rec["note"] = note
+        if evidence:
+            _add_evidence(doc, rec, evidence, "mark", now)
         _event(plan_dir, now, iid, "mark", state=state, note=note)
-    return f"{iid} marked {state}"
+        ripple = _ripple(plan, doc, iid) if state == "done" else ""
+    return f"{iid} marked {state}{ripple}"
+
+
+def verify(plan: Plan, plan_dir: Path, world: World, iid: str, ok: str = "",
+           fail: str = "") -> str:
+    """Re-establish a done item's evidence, typically after a pin it rests on moved.
+
+    With neither flag, the oracle runs now. `--ok <evidence>` records a check done elsewhere --
+    an expensive falsifier a worker ran -- and `--fail <why>` reopens the item. A reopened item
+    is not closed again by its oracle alone, since the oracle may be what failed to notice: it
+    needs a worker's `done` or another `verify`.
+    """
+    it = plan.items.get(iid)
+    if it is None:
+        raise EngineError(f"no item {iid!r} in plan {plan.name!r}.")
+    now = world.now()
+    verdict = None
+    if not ok and not fail:
+        if not it.oracle or oracles.is_manual(it.oracle):
+            raise EngineError(f"{iid}'s oracle is manual; run the check and record it with "
+                              "--ok <evidence> or --fail <why>.")
+        cwd = it.repo if it.repo and Path(it.repo).is_dir() else str(plan_dir)
+        verdict = oracles.check(it.oracle, cwd, world.oracle_run)
+        if verdict.ok is None:
+            return f"{iid}: could not check ({verdict.detail}); nothing changed"
+    with store.transaction(plan_dir) as doc:
+        rec = _rec(doc, iid)
+        good = bool(ok) or (verdict is not None and verdict.ok is True)
+        why = fail or (verdict.detail if verdict else "")
+        if good:
+            rec.pop("stale", None)
+            rec.pop("reopened", None)
+            rec["state"] = "done"
+            _add_evidence(doc, rec, ok or verdict.detail, "verify", now)
+            outcome = f"{iid} verified at pins {_pin_snapshot(doc) or '{}'}"
+        else:
+            for k in ("state", "stale", "claimed_done"):
+                rec.pop(k, None)
+            rec["reopened"] = f"{now.date()}: {why}"
+            outcome = f"{iid} reopened: {why}"
+        _event(plan_dir, now, iid, "verify", ok=good, detail=ok or why)
+    return outcome
 
 
 def attach(plan_dir: Path, world: World, repo: str, target: str, pane: str = "") -> str:

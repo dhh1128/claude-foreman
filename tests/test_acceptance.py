@@ -21,7 +21,7 @@ import shlex
 
 from fakes import BIN, World, make_repo
 
-WRAP = shlex.join(["sh", "-c", '"$@"; exec "${SHELL:-/bin/sh}" -l', "foreman-worker"])
+WRAP = shlex.join(["sh", "-c", '"$@"; exec "${SHELL:-/bin/sh}" -l'])
 
 PLAN = '''
 [plan]
@@ -176,7 +176,8 @@ def test_3_dry_run_prints_the_worktree_and_tmux_command_and_executes_nothing(w):
     assert f"git -C {core} fetch origin main" in out
     assert f"git -C {core} worktree add {wt} -b core-lib origin/main" in out
     line = next(l for l in out.splitlines() if l.startswith("tmux new-window"))
-    assert f"-n core-lib -c {wt} {WRAP} claude --session-id " in line
+    sid = line.split("--session-id ")[1].split()[0]
+    assert f"-n core-lib -c {wt} {WRAP} foreman-worker:{sid} claude --session-id {sid} " in line
     assert "briefs/common.md then " in line and "briefs/core-lib.md" in line
     assert "foreman report --plan roadmap core-lib" in line
     assert "dry run: nothing was executed" in out
@@ -423,7 +424,7 @@ def test_relaunching_an_adopted_worker_reuses_its_recorded_tree(w):
     out = w.foreman("launch", "--relaunch", "app-decisions").stdout
     assert "worktree add" not in out
     line = next(l for l in out.splitlines() if l.startswith("tmux new-window"))
-    assert f"-c {app} {WRAP} claude --resume hand-1" in line
+    assert f"-c {app} {WRAP} foreman-worker:hand-1 claude --resume hand-1" in line
 
 
 def test_launch_runs_claude_under_a_shell_so_session_coord_can_find_it(w):
@@ -432,6 +433,7 @@ def test_launch_runs_claude_under_a_shell_so_session_coord_can_find_it(w):
     (call,) = w.calls("tmux")
     i = call.index("-c")
     assert call[i + 2:i + 5] == ["sh", "-c", '"$@"; exec "${SHELL:-/bin/sh}" -l']
+    assert call[i + 5] == "foreman-worker:" + call[call.index("--session-id") + 1]
     assert call[i + 6] == "claude"
     prompt = call[-1]
     assert "do not stop to ask the user" in prompt
@@ -464,3 +466,123 @@ def test_a_worker_waiting_on_the_user_is_on_the_board_until_it_resumes(w):
     assert any("app-decisions: waiting on the user" in a and "@7eg285mu" in a for a in b["attention"])
     w.foreman("report", "app-decisions", "running", "approved; implementing")
     assert not any("waiting" in a for a in board(w)["attention"])
+
+
+# R-EPTZ: pins, staleness, verify, reopen, evidence -------------------------------------------
+def _with_pin(w, freeze="2099-01-01"):
+    (w.signals / "core.pin").write_text("75de363\n")
+    p = w.plan_dir / "plan.toml"
+    t = p.read_text().replace('name = "roadmap"', f'name = "roadmap"\nfreeze = {freeze}')
+    t = t.replace('[items.app-decisions]\n', '[items.app-decisions]\nrests_on = ["core"]\n')
+    t += f'\n[pins.core]\ncmd = "cat {w.signals}/core.pin"\n'
+    p.write_text(t)
+
+
+def test_a_moved_pin_makes_resting_evidence_stale_and_verify_reopens_or_reaffirms(w):
+    _with_pin(w)
+    w.signal("decisions")
+    w.foreman("pulse")  # baseline pin, and app-decisions closes on its oracle
+    b = board(w)
+    assert b["states"]["app-decisions"] == "done"
+    assert not any("pin" in c for c in b["attention"])
+
+    (w.signals / "core.pin").write_text("9abc111\n")
+    out = w.foreman("pulse").stdout
+    assert "* pin core moved 75de363 -> 9abc111; evidence now stale for app-decisions" in out
+    assert "AFTER ITS FREEZE" not in out
+    assert any("app-decisions: evidence stale" in a for a in board(w)["attention"])
+
+    # A falsifier run elsewhere (say, ten cold starts) passed: record it, with where it lives.
+    r = w.foreman("verify", "app-decisions", "--ok", "evidence/M5/runs-10-9abc111").stdout
+    assert "verified at pins {'core': '9abc111'}" in r
+    assert not any("stale" in a for a in board(w)["attention"])
+    assert "evidence/M5/runs-10-9abc111 at core=9abc111" in w.foreman("show", "app-decisions").stdout
+
+    # The next move breaks it: reopen. The oracle alone does not close it again.
+    (w.signals / "core.pin").write_text("deadbee\n")
+    w.foreman("pulse")
+    w.foreman("verify", "app-decisions", "--fail", "act 4b red on deadbee")
+    w.foreman("pulse")
+    b = board(w)
+    assert b["states"]["app-decisions"] == "ready"
+    assert any("app-decisions: reopened" in a for a in b["attention"])
+    w.foreman("adopt", "app-decisions", "--session", "s9")
+    w.foreman("report", "app-decisions", "done", "fixed for deadbee", "--evidence", "PR #7")
+    assert board(w)["states"]["app-decisions"] == "done"
+
+
+def test_a_pin_moving_after_its_freeze_is_called_out(w):
+    _with_pin(w, freeze="2000-01-01")
+    w.foreman("pulse")
+    (w.signals / "core.pin").write_text("9abc111\n")
+    assert "AFTER ITS FREEZE (2000-01-01)" in w.foreman("pulse").stdout
+
+
+def test_an_unreadable_pin_is_not_a_move(w):
+    _with_pin(w)
+    w.foreman("pulse")
+    (w.signals / "core.pin").unlink()
+    assert "pin core" not in w.foreman("pulse").stdout
+    (w.signals / "core.pin").write_text("75de363\n")
+    assert "pin core" not in w.foreman("pulse").stdout
+
+
+# R-YJY0: workers separate from items ---------------------------------------------------------
+def test_one_worker_carries_items_in_turn_and_holds_one_slot(w):
+    w.foreman("worker", "add", "sub-a", "--engine", "subagent", "--note", "PM's re-pin subagent")
+    out = w.foreman("assign", "app-decisions", "sub-a").stdout
+    assert "app-decisions assigned to sub-a (subagent)" in out
+    assert "Deliver this brief" in out and "foreman report --plan roadmap app-decisions" in out
+    (w.fake / "merged.txt").write_text("upstream/lib#1576\nupstream/lib#1577\n")
+    w.foreman("pulse")
+    w.foreman("assign", "app-upstream", "sub-a")
+    w.foreman("pulse")
+    b = board(w)
+    assert b["workers"] == [1, 3]
+    assert "app-upstream [sub-a] running unknown" in w.foreman("board").stdout
+
+    w.foreman("mark", "app-decisions", "done")
+    w.foreman("mark", "app-upstream", "done")
+    assert "idle workers, assignable: sub-a (subagent)" in w.foreman("board").stdout
+    assert "sub-a  subagent" in w.foreman("worker", "list").stdout
+
+
+def test_a_codex_item_launches_codex_with_the_prompt_and_no_session_flag(w):
+    Path(os.environ["FOREMAN_CONFIG"]).write_text('[engines]\ncodex = ["codex", "--yolo"]\n')
+    p = w.plan_dir / "plan.toml"
+    p.write_text(p.read_text().replace('[items.app-decisions]\n',
+                                       '[items.app-decisions]\nengine = "codex"\n'))
+    out = w.foreman("launch", "app-decisions").stdout
+    line = next(l for l in out.splitlines() if l.startswith("tmux new-window"))
+    assert " codex --yolo 'You are the worker session" in line
+    assert "--session-id" not in line and " foreman-worker:" in line
+
+
+def test_an_item_naming_an_unknown_engine_is_refused_at_launch(w):
+    p = w.plan_dir / "plan.toml"
+    p.write_text(p.read_text().replace('[items.app-decisions]\n',
+                                       '[items.app-decisions]\nengine = "gemini"\n'))
+    r = w.foreman("launch", "app-decisions", check=False)
+    assert r.returncode == 2 and "engine 'gemini'" in r.stderr
+
+
+# Q-GCVF: standing rules the PM applies; documents it owns; a merge moves others' base -------
+def test_rules_are_recorded_on_disk_and_owned_documents_listed(w):
+    p = w.plan_dir / "plan.toml"
+    p.write_text(p.read_text().replace('name = "roadmap"',
+                                       'name = "roadmap"\nowns = ["status.md"]'))
+    assert "(none yet)" in w.foreman("rules").stdout
+    w.foreman("rules", "--add", "Hand-merge when the gate objects only on scope; "
+              "cross-engine review required.", "--source", "Q-MMQY")
+    out = w.foreman("rules").stdout
+    assert "(Q-MMQY): Hand-merge when the gate objects only on scope" in out
+    assert f"documents the PM maintains: {w.plan_dir / 'status.md'}" in out
+
+
+def test_landing_an_item_tells_the_pm_whose_base_moved(w):
+    w.foreman("adopt", "app-decisions", "--session", "s1")
+    (w.fake / "merged.txt").write_text("upstream/lib#1576\nupstream/lib#1577\n")
+    w.foreman("pulse")
+    w.foreman("adopt", "app-upstream", "--session", "s2")
+    out = w.foreman("mark", "app-decisions", "done").stdout
+    assert f"base moved for app-upstream in {w.repos / 'app'}" in out

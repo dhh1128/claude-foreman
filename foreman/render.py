@@ -41,6 +41,8 @@ def summary(plan: Plan, doc: dict[str, Any], cfg: Config, now: dt.datetime) -> d
                              f"-> `foreman launch --relaunch {iid}` or `foreman mark {iid} reset`")
         if r.get("stuck") and sts[iid] not in graph.FINAL:
             attention.append(f"{iid}: stuck, \"{_short(r['stuck'])}\"")
+        if r.get("waiting") and sts[iid] not in graph.FINAL:
+            attention.append(f"{iid}: waiting on the user, \"{_short(r['waiting'])}\"")
         if r.get("claimed_done") and sts[iid] == "review":
             attention.append(f"{iid}: claims done; oracle says {_short(r.get('oracle', {}).get('detail', 'manual'), 60)}")
         if r.get("ask_error"):
@@ -131,7 +133,7 @@ def show(plan: Plan, doc: dict[str, Any], iid: str, events: list[dict[str, Any]]
     if it.due:
         lines.append(f"  due {it.due}" + (f", estimate {it.estimate_days:g}d" if it.estimate_days else ""))
     for k in ("session", "pane", "worktree", "worker", "launched", "last_report", "last_line",
-              "stuck", "ask", "note"):
+              "stuck", "waiting", "ask", "note"):
         if r.get(k):
             lines.append(f"  {k} {r[k]}")
     if r.get("oracle"):

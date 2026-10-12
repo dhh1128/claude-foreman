@@ -75,7 +75,7 @@ It also modelled a decision *inside* a work item ("G14 stops once for approval o
 
 Reported by the first real PM and not yet built:
 
-- **Decision gates inside a build item.** A worker that must stop for the human's approval of something it has just written cannot be modelled as a `decision` item, which would be asked at the next pulse, before there is anything to approve. The PM used `report stuck` with the ask ids in the line. Wanted: `report <id> decision "<what to approve>"` filing the ask itself, or a dependency on a worker milestone.
+- **Decision gates inside a build item** are now reported as `waiting`, which puts an attention line on the board (the PM had seen gated workers report `running "...awaiting Daniel"`, which the board did not flag). The ask itself is still filed by the worker, not by foreman.
 - **The PM is not registered where its workers are.** Claiming the conductor role in the work repo needed a hand `session-coord register` there. `attach` could do it.
 - **`foreman` is not on PATH in a session that predates the plugin install**, and the versioned cache path changes on every update. A stable shim outside the plugin would fix it; none is installed by the plugin.
 

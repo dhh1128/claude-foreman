@@ -455,3 +455,12 @@ def test_the_pm_reporting_on_a_workers_behalf_does_not_ring_itself(w):
 def test_adopt_warns_when_the_tree_does_not_exist(w):
     out = w.foreman("adopt", "app-decisions", "--session", "s1").stdout
     assert "does not exist yet" in out
+
+
+def test_a_worker_waiting_on_the_user_is_on_the_board_until_it_resumes(w):
+    w.foreman("adopt", "app-decisions", "--session", "s1")
+    w.foreman("report", "app-decisions", "waiting", "decision node @7eg285mu awaits approval (Q-ABCD)")
+    b = board(w)
+    assert any("app-decisions: waiting on the user" in a and "@7eg285mu" in a for a in b["attention"])
+    w.foreman("report", "app-decisions", "running", "approved; implementing")
+    assert not any("waiting" in a for a in board(w)["attention"])

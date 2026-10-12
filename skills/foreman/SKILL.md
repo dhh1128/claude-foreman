@@ -50,6 +50,7 @@ The cap on live workers comes from config; `foreman` refuses past it and ready i
 
 - **Worker gone.** Its session ended before the item finished. If it was mid-work, `foreman launch --relaunch <id> --go` resumes the same conversation in a new window. If the item needs rethinking, `foreman mark <id> reset --note "<why>"` returns it to ready.
 - **No report for N hours.** Message the worker through session-coord and ask for a one-line status. Do not open its pane and read the scrollback.
+- **Waiting on the user.** A worker paused at a gate inside its item. These lines are the board's account of what the user owes; gather them into your one line to the user rather than re-asking.
 - **Stuck.** Read the one line. If you or a peer session can answer it, answer it; if it is the user's to decide, file one ask that stands on its own.
 - **Claims done, oracle disagrees.** Usually the PR is open and not merged. Leave it. If the oracle is wrong, fix the oracle in the plan file rather than marking done by hand.
 - **Late, or overdue.** The board gives the chain that cannot finish in time. Tell the user once, with the chain and the number of days, and what you would cut.
@@ -77,6 +78,7 @@ You were started with a prompt naming your plan and item. Read the briefs it nam
 - `running` at each real milestone, not every step;
 - `review` with the PR URL once it is open;
 - `done` when you believe the work is finished — foreman checks the exit condition itself, so a `done` before the merge leaves the item in review, which is correct;
-- `stuck` with what you need, when you cannot go on.
+- `waiting` when you pause for the user — a decision node to approve, a question you filed — naming what they must decide and any ask ids;
+- `stuck` with what you need, when you cannot go on for any other reason.
 
 One line each. The PM reads them every wake, and a paragraph costs it context every time.

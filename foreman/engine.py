@@ -22,7 +22,10 @@ from .config import Config
 from .coord import Coord
 from .plan import Item, Plan
 
-REPORT_STATES = ("running", "review", "done", "stuck")
+REPORT_STATES = ("running", "review", "done", "stuck", "waiting")
+#: Flags a report sets and a later `running`/`review`/`done` clears. `stuck`: the worker cannot go
+#: on. `waiting`: it is paused on the user -- a decision gate inside the item, an approval.
+FLAGS = ("stuck", "waiting")
 MARK_STATES = ("done", "abandoned", "reset")
 CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 
@@ -70,6 +73,11 @@ def _event(plan_dir: Path, now: dt.datetime, item: str, what: str, **kw: Any) ->
     store.append_event(plan_dir, {"t": _iso(now), "item": item, "what": what, **kw})
 
 
+def _clear_flags(rec: dict[str, Any]) -> None:
+    for f in FLAGS:
+        rec.pop(f, None)
+
+
 def _rec(doc: dict[str, Any], iid: str) -> dict[str, Any]:
     return doc["items"].setdefault(iid, {})
 
@@ -111,7 +119,7 @@ def pulse(plan: Plan, plan_dir: Path, cfg: Config, world: World) -> dict[str, An
             rec["oracle"] = {"ok": v.ok, "detail": v.detail, "checked": _iso(now)}
             if v.ok is True and rec.get("state") not in graph.FINAL:
                 rec["state"] = "done"
-                rec.pop("stuck", None)
+                _clear_flags(rec)
                 changes.append(f"{iid} done: {v.detail}")
                 _event(plan_dir, now, iid, "oracle", ok=True, detail=v.detail)
             elif v.ok != prev:
@@ -316,13 +324,13 @@ def report(plan: Plan, plan_dir: Path, world: World, iid: str, state: str, line:
         rec = _rec(doc, iid)
         if rec.get("state") in graph.FINAL or it.pinned:
             outcome = f"{iid} is already {it.pinned or rec['state']}; report recorded only"
-        elif state == "stuck":
-            rec["stuck"] = line
-            outcome = f"{iid} flagged stuck"
+        elif state in FLAGS:
+            rec[state] = line
+            outcome = f"{iid} flagged {state}"
         elif state == "done":
             if verdict is not None and verdict.ok is True:
                 rec["state"] = "done"
-                rec.pop("stuck", None)
+                _clear_flags(rec)
                 outcome = f"{iid} done; oracle agrees ({verdict.detail})"
             else:
                 rec["state"] = "review"
@@ -333,14 +341,14 @@ def report(plan: Plan, plan_dir: Path, world: World, iid: str, state: str, line:
                 rec["oracle"] = {"ok": verdict.ok, "detail": verdict.detail, "checked": _iso(now)}
         else:
             rec["state"] = state
-            rec.pop("stuck", None)
+            _clear_flags(rec)
             outcome = f"{iid} {state}"
         rec["last_report"] = _iso(now)
         rec["last_line"] = line
         _event(plan_dir, now, iid, "report", state=state, line=line, outcome=outcome)
         pm = dict(doc.get("pm", {}))
     from_pm = bool(pm.get("pane")) and pm.get("pane") == world.pane()
-    if state in ("review", "done", "stuck") and pm.get("repo") and pm.get("target") and not from_pm:
+    if state in ("review", "done") + FLAGS and pm.get("repo") and pm.get("target") and not from_pm:
         world.coord.msg(pm["repo"], pm["target"],
                         f"foreman: {outcome}. Worker says: {line}. Run `foreman pulse --plan "
                         f"{plan.name}`.")
@@ -360,7 +368,7 @@ def mark(plan: Plan, plan_dir: Path, world: World, iid: str, state: str, note: s
             doc["items"][iid] = {k: v for k, v in rec.items() if k in ("ask", "ask_repo")}
         else:
             rec["state"] = state
-            rec.pop("stuck", None)
+            _clear_flags(rec)
         rec = doc["items"][iid]
         rec["note"] = note
         _event(plan_dir, now, iid, "mark", state=state, note=note)

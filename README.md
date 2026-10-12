@@ -64,6 +64,19 @@ rests_on = ["core"]               # a moved pin makes this item's evidence stale
 engine = "codex"                  # launched with config's [engines] codex command
 ```
 
+Items can also say who they wait on and when to nag, and a decision can be held until a wait drags on:
+
+```toml
+[items.upstream-merges]
+kind = "external"
+waiting_on = "Sam Smith"          # "user" means you; foreman then files you an ask to do it
+nag_after = "14d"
+
+[items.fork-fallback]
+kind = "decision"
+ask_when = "upstream-merges waits > 21d"   # or a date
+```
+
 Oracles are `pr:owner/repo#N` (merged), `cmd:<shell>` (exits 0), `file:<path>` (exists), or `manual` (closed with `foreman mark`). A list means all must hold. Cycles, dangling dependencies and malformed oracles are refused when the plan loads.
 
 ## Commands

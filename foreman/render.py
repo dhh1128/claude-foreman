@@ -73,6 +73,13 @@ def summary(plan: Plan, doc: dict[str, Any], cfg: Config, now: dt.datetime) -> d
             attention.append(f"{iid}: evidence stale, {r['stale']} -> `foreman verify {iid}`")
         if r.get("reopened") and sts[iid] not in graph.FINAL:
             attention.append(f"{iid}: reopened, {_short(r['reopened'], 60)}")
+    for iid, it in plan.items.items():
+        days = engine.waited_days(doc, iid, now)
+        if it.nag_after_days and days is not None and days > it.nag_after_days \
+                and sts[iid] not in graph.FINAL:
+            who = f" on {it.waiting_on}" if it.waiting_on else ""
+            attention.append(f"{iid}: waiting{who} {int(days)}d (nag after "
+                             f"{it.nag_after_days:g}d)")
     for iid, bad in graph.stranded(plan, sts).items():
         attention.append(f"{iid}: stranded behind abandoned {', '.join(bad)}")
     for rk in graph.risks(plan, sts, now.date()):
@@ -101,11 +108,18 @@ def summary(plan: Plan, doc: dict[str, Any], cfg: Config, now: dt.datetime) -> d
     for iid, it in plan.items.items():
         if it.kind != "build" and sts[iid] == "ready":
             r = recs.get(iid, {})
+            days = engine.waited_days(doc, iid, now)
+            age = f" {int(days)}d" if days is not None and days >= 1 else ""
+            on = f", on {it.waiting_on}{age}" if it.waiting_on else (f",{age}" if age else "")
             if it.kind == "decision":
-                waiting.append(f"{iid} (decision{', asked ' + r['ask'] if r.get('ask') else ''})")
+                due, cond = engine.ask_due(plan, doc, it, sts, now)
+                held = "" if due or r.get("ask") else f", held until {cond}"
+                waiting.append(f"{iid} (decision{', asked ' + r['ask'] if r.get('ask') else ''}{held})")
             else:
                 ok = r.get("oracle", {}).get("ok")
-                waiting.append(f"{iid} (external{', unknown' if ok is None and r.get('oracle') else ''})")
+                asked = f", asked {r['ask']}" if r.get("ask") else ""
+                waiting.append(f"{iid} (external{on}{asked}"
+                               f"{', unknown' if ok is None and r.get('oracle') else ''})")
     blocked = [f"{iid}<-{','.join(d for d in plan.items[iid].depends_on if sts[d] != 'done')}"
                for iid in plan.items if sts[iid] == "blocked"]
     counts = {s: sum(1 for v in sts.values() if v == s)

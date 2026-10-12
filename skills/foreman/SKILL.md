@@ -96,6 +96,12 @@ foreman mark trust-posture done --note "pinned roots only, for the first release
 
 Then dissolve the ask in session-coord. Never close a decision on your own judgement, and never treat silence as an answer.
 
+## Waits on people outside the plan
+
+When a step needs someone outside the plan, put them in it. A change the user must post and a maintainer must merge is three items: a `build` item (a worker prepares the branch and drafts the text), an `external` item with `waiting_on = "user"` (foreman files the user an ask to go and do it, with the draft's path from `brief`), and an `external` item with `waiting_on = "<the maintainer>"` and a `nag_after`. Write their oracles as read-only checks that need nothing filled in later, such as a `gh pr list --head <branch>` query, not a PR number. The board then says who the critical path is waiting on and for how long.
+
+A fallback that should only be raised if a wait drags on is a `decision` with `ask_when = "<item> waits > 21d"`. It stays held, and is never asked if the wait ends first.
+
 ## Editing the plan
 
 The plan is `plan.toml`, written by hand; `foreman check` validates it, and every verb refuses a plan with a cycle, a dangling dependency or a malformed oracle. You may edit it — add an item the work turned up, fix an oracle, add a dependency you discovered — and say in one line what you changed. Do not delete items that have state; mark them abandoned, so their dependents show as stranded rather than silently ready.

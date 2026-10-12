@@ -70,10 +70,40 @@ def _parse(s: str) -> dt.datetime | None:
         return None
 
 
-def ask_tag(plan: Plan, item_id: str) -> str:
+def ask_tag(plan: Plan, item_id: str, kind: str = "Q") -> str:
     """A stable tag per (plan, item), so filing twice is visibly the same ask."""
     h = int.from_bytes(hashlib.sha256(f"{plan.name}\0{item_id}".encode()).digest()[:4], "big")
-    return "Q-" + "".join(CROCKFORD[(h >> (5 * i)) & 31] for i in range(4))
+    return f"{kind}-" + "".join(CROCKFORD[(h >> (5 * i)) & 31] for i in range(4))
+
+
+def user_name() -> str:
+    return os.environ.get("FOREMAN_USER") or os.environ.get("SESSION_COORD_USER") or "the user"
+
+
+def waits_on_user(it: Item) -> bool:
+    w = it.waiting_on.strip().lower()
+    return bool(w) and w in ("user", user_name().lower())
+
+
+def waited_days(doc: dict[str, Any], iid: str, now: dt.datetime) -> float | None:
+    since = _parse(doc["items"].get(iid, {}).get("ready_since", ""))
+    return (now - since).total_seconds() / 86400 if since else None
+
+
+def ask_due(plan: Plan, doc: dict[str, Any], it: Item, sts: dict[str, str],
+            now: dt.datetime) -> tuple[bool, str]:
+    """Whether a decision's `ask_when` has arrived, and the condition, for the board."""
+    if not it.ask_when:
+        return True, ""
+    from .plan import parse_ask_when
+    cond = parse_ask_when(it.ask_when, plan.items)
+    if cond[0] == "date":
+        return now.date() >= cond[1], it.ask_when
+    _, other, days = cond
+    if sts[other] in graph.FINAL:
+        return False, f"{other} finished; not needed"
+    waited = waited_days(doc, other, now)
+    return (waited is not None and waited > days), it.ask_when
 
 
 def _event(plan_dir: Path, now: dt.datetime, item: str, what: str, **kw: Any) -> None:
@@ -159,6 +189,7 @@ def pulse(plan: Plan, plan_dir: Path, cfg: Config, world: World) -> dict[str, An
                 doc["workers"][rec["wid"]]["worker"] = worker
 
         changes += _pins(plan, plan_dir, doc, pin_values, now)
+        _ready_since(plan, doc, graph.states(plan, doc), now)
         if cfg.escalate == "session-coord":
             changes += _escalate(plan, plan_dir, doc, sts, world, now)
         _quiet_panes(plan, doc, sts, world)
@@ -303,25 +334,54 @@ def _quiet_panes(plan: Plan, doc: dict[str, Any], sts: dict[str, str], world: Wo
                 rec["pane_activity"] = t
 
 
+def _ready_since(plan: Plan, doc: dict[str, Any], sts: dict[str, str], now: dt.datetime) -> None:
+    """When each item last became ready or active, so waits can be aged and nagged about."""
+    for iid in plan.items:
+        rec = doc["items"].get(iid)
+        if sts[iid] in ("ready",) + graph.ACTIVE:
+            if rec is None:
+                rec = doc["items"][iid] = {}
+            rec.setdefault("ready_since", _iso(now))
+        elif rec is not None:
+            rec.pop("ready_since", None)
+
+
 def _escalate(plan: Plan, plan_dir: Path, doc: dict[str, Any], sts: dict[str, str],
               world: World, now: dt.datetime) -> list[str]:
-    """One ask per ready decision, recorded so that no restart files it twice."""
+    """One ask per ready decision (Q), and per ready external item waiting on the user (A),
+    recorded so that no restart files it twice. A decision with `ask_when` is held until then."""
     out = []
     repo = doc.get("pm", {}).get("repo") or world.cwd()
     for iid, it in plan.items.items():
-        if it.kind != "decision" or sts[iid] != "ready":
+        if sts[iid] != "ready":
+            continue
+        if it.kind == "decision":
+            due, _cond = ask_due(plan, doc, it, sts, now)
+            if not due:
+                continue
+            kind = "Q"
+        elif it.kind == "external" and waits_on_user(it):
+            kind = "A"
+        else:
             continue
         rec = _rec(doc, iid)
         if rec.get("ask"):
             continue
-        tag = ask_tag(plan, iid)
+        tag = ask_tag(plan, iid, kind)
         unblocks = [plan.items[d].title for d in plan.dependents(iid)]
-        text = (f"Decision for plan '{plan.name}' -- {it.title}: "
-                f"{it.question or 'see the plan item for the options'}"
-                + (f" Answering unblocks: {'; '.join(unblocks)}." if unblocks else "")
-                + " Tell the project-manager session your answer and it will close the item.")
+        if kind == "Q":
+            text = (f"Decision for plan '{plan.name}' -- {it.title}: "
+                    f"{it.question or 'see the plan item for the options'}"
+                    + (f" Answering unblocks: {'; '.join(unblocks)}." if unblocks else "")
+                    + " Tell the project-manager session your answer and it will close the item.")
+        else:
+            text = (f"For plan '{plan.name}', please do this yourself: {it.title}."
+                    + (f" {it.question}" if it.question else "")
+                    + (f" Details: {it.brief}." if it.brief else "")
+                    + (f" It unblocks: {'; '.join(unblocks)}." if unblocks else "")
+                    + " foreman notices by itself when it is done; nothing to report back.")
         deps = [doc["items"].get(d, {}).get("ask") for d in it.depends_on]
-        ok, note = world.coord.ask_add(repo, tag, "Q", text, [d for d in deps if d])
+        ok, note = world.coord.ask_add(repo, tag, kind, text, [d for d in deps if d])
         if ok:
             rec["ask"] = tag
             rec["ask_repo"] = repo

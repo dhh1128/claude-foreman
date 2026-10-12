@@ -56,6 +56,13 @@ class Item:
     #: Other repos this item's work lands in. `repo` is where its worker starts; a change that
     #: spans a test suite and a library touches both, and merges queue in each.
     touches: tuple[str, ...] = ()
+    #: Who an item is waiting on, for the board: "user" (the human running the plan), or a name
+    #: such as "Sam Smith". An external item waiting on "user" files an ask to go and do it.
+    waiting_on: str = ""
+    #: Raise an attention line once the item has been ready but unfinished this long.
+    nag_after_days: float = 0.0
+    #: For a decision: hold the ask until this holds. "<item> waits > 21d", or a date.
+    ask_when: str = ""
 
     @property
     def repos(self) -> tuple[str, ...]:
@@ -157,7 +164,8 @@ def parse(text: str, path: Path, name: str | None = None) -> Plan:
     plan_due = _date(meta.get("due"), f"{path} [plan]")
     items: dict[str, Item] = {}
     allowed = {"title", "kind", "repo", "topic", "depends_on", "oracle", "brief", "question",
-               "due", "estimate", "state", "ref", "base", "engine", "rests_on", "touches"}
+               "due", "estimate", "state", "ref", "base", "engine", "rests_on", "touches",
+               "waiting_on", "nag_after", "ask_when"}
     for iid, d in raw_items.items():
         where = f"item {iid!r}"
         if not ID_RE.match(iid):
@@ -204,6 +212,9 @@ def parse(text: str, path: Path, name: str | None = None) -> Plan:
             engine=str(d.get("engine", "claude")).strip() or "claude",
             rests_on=_strs(d.get("rests_on"), where, "rests_on"),
             touches=tuple(_path(t, base) for t in _strs(d.get("touches"), where, "touches")),
+            waiting_on=str(d.get("waiting_on", "")).strip(),
+            nag_after_days=_days(d.get("nag_after"), where),
+            ask_when=str(d.get("ask_when", "")).strip(),
         )
 
     mw = meta.get("max_workers")
@@ -224,6 +235,10 @@ def parse(text: str, path: Path, name: str | None = None) -> Plan:
         pins[pname] = Pin(pname, str(pd["cmd"]).strip(), _path(str(pd.get("repo", "")), base),
                           _date(pd.get("freeze"), where) or plan_freeze)
     for it in items.values():
+        if it.ask_when:
+            if it.kind != "decision":
+                raise PlanError(f"item {it.id!r}: ask_when applies only to decision items.")
+            parse_ask_when(it.ask_when, items, f"item {it.id!r}")
         for r in it.rests_on:
             if r not in pins:
                 raise PlanError(f"item {it.id!r} rests on pin {r!r}, which is not in [pins].")
@@ -236,6 +251,23 @@ def parse(text: str, path: Path, name: str | None = None) -> Plan:
                 pins=pins)
     validate(plan)
     return plan
+
+
+ASK_WHEN_WAIT = re.compile(r"^([a-z0-9][a-z0-9._-]*)\s+waits\s*>\s*(\S+)$")
+
+
+def parse_ask_when(text: str, items: Mapping[str, Item], where: str = "") -> tuple:
+    """("date", date) or ("wait", item id, days). Refuses anything else, naming the forms."""
+    m = ASK_WHEN_WAIT.match(text.strip())
+    if m:
+        if m.group(1) not in items:
+            raise PlanError(f"{where}: ask_when names {m.group(1)!r}, which is not in the plan.")
+        return ("wait", m.group(1), _days(m.group(2), where))
+    try:
+        return ("date", dt.date.fromisoformat(text.strip()))
+    except ValueError:
+        raise PlanError(f"{where}: ask_when {text!r} is not '<item> waits > 21d' or a date "
+                        "like 2026-11-01.") from None
 
 
 def validate(plan: Plan) -> None:

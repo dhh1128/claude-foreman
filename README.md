@@ -104,7 +104,7 @@ claude = ["claude"]        # the command that starts a worker, with any flags it
 escalate = "session-coord" # or "none"
 ```
 
-Workers are started by tmux, not by your interactive shell, so a shell function or alias that adds flags to `claude` does not apply to them. Put the flags in `claude`, e.g. `["claude", "--dangerously-skip-permissions"]`; otherwise unattended workers stop at permission prompts nobody sees.
+Workers are started by tmux, not by your interactive shell, so a shell function or alias that adds flags to `claude` does not apply to them. Put the flags in `claude` (or under `[engines]`). Choose them knowingly: a worker runs unattended, so a permission prompt stalls it where nobody sees, while a flag that skips permissions or a sandbox lets it act unreviewed. foreman defaults to neither.
 
 House rules for the skill go in `~/.config/foreman/addendum.md` (or `FOREMAN_ADDENDUM`), which the skill reads first and treats as more specific than itself.
 

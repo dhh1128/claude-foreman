@@ -13,7 +13,11 @@ Config: `$FOREMAN_CONFIG`, default `~/.config/foreman/config.toml`. Every key is
     tmux_session = ""        # where worker windows open; default the caller's tmux session
     claude = ["claude"]      # the command that starts a worker, before its own flags
     [engines]                # other engines an item can name with `engine = "<name>"`
-    codex = ["codex", "--dangerously-bypass-approvals-and-sandbox"]
+    codex = ["codex", "--sandbox", "workspace-write"]
+
+Workers run unattended, so whatever permission mode their command sets is the mode they run
+in with nobody watching. Bypassing an engine's sandbox or approvals is the user's decision
+for their own machine; nothing here defaults to it.
     escalate = "session-coord"   # or "none": list decisions on the board, file nothing
     idle_minutes = 30        # a leftover process whose CPU has not moved this long is "idle"
     pane_quiet_minutes = 30  # a running worker's pane unchanged this long may be at a prompt

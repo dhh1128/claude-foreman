@@ -31,15 +31,17 @@ You will be compacted, crash, or be killed by a reboot. Nothing you know should 
 
 ## The loop
 
-Each wake, whether from a worker's message, a timer, or the user:
+The mechanical part runs without you. `zamu watch` (normally the box's systemd service, `zamu service status`) pulses every plan, launches ready work into free slots on plans with `autolaunch = true`, and messages you through session-coord only when something needs judgement. So you are reactive. When you wake, from a watcher message, a worker report or the user:
 
 ```
-zamu pulse          # checks oracles and workers, files decision asks, prints the board
+zamu pulse          # the current board, with what changed
 ```
 
-Read the board's `attention:` lines and act on each, then launch what is ready, then schedule the next wake (`ScheduleWakeup`, 1200–1800 s, as a fallback; worker reports wake you sooner through session-coord). Do not read workers' transcripts or logs. If one item needs more, `zamu show <id>` gives its record and last events in a few lines.
+Act on each `attention:` line, then end your turn. Do not poll. Schedule one long fallback wake (`ScheduleWakeup`, about two hours) in case the watcher is down, and check `zamu service status` if a wake finds it stopped. Without the service, start the watcher yourself as a background task, `zamu watch --plan <name> --exit-on-news`; it exits with the news, and you are woken by its exit. Start it again after acting.
 
-**Before the first wake of a session**, attach so worker reports can reach you:
+Do not read workers' transcripts or logs. If one item needs more, `zamu show <id>` gives its record and last events in a few lines.
+
+**Before the first wake of a session**, attach so reports and the watcher can reach you, and so workers open in your tmux session:
 
 ```
 zamu attach --target "<this session's name>"
@@ -52,7 +54,7 @@ zamu launch --ready          # prints exactly what would run; executes nothing
 zamu launch --ready --go     # creates worktrees, opens tmux windows, starts claude
 ```
 
-**The first launches of any plan are dry runs, shown to the user.** Real launches start only when the user has said the dry run looks right. After that, launching ready items is your job and needs no further permission unless the addendum says otherwise.
+**The first launches of any plan are dry runs, shown to the user.** Real launches start only when the user has said the dry run looks right. Then set `autolaunch = true` under `[plan]`, and the watcher launches ready items into free slots from then on, without anyone being asked.
 
 ## Workers
 

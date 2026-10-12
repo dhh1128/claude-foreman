@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable, Sequence
 
 #: argv -> (returncode, stdout, stderr). Raises OSError / TimeoutExpired when it cannot run.
@@ -30,10 +30,27 @@ def default_exec(argv: Sequence[str]) -> tuple[int, str, str]:
     return r.returncode, r.stdout, r.stderr
 
 
+def find_session_coord() -> str:
+    """The session-coord command. On PATH inside a Claude session; outside one -- the watcher
+    under systemd -- found through Claude Code's plugin install record."""
+    found = shutil.which("session-coord")
+    if found:
+        return found
+    import os
+    p = os.path.expanduser("~/.claude/plugins/installed_plugins.json")
+    try:
+        with open(p) as f:
+            rec = json.load(f)["plugins"]["session-coord@session-coord"][0]
+        cand = os.path.join(rec["installPath"], "bin", "session-coord")
+        return cand if os.path.exists(cand) else "session-coord"
+    except (OSError, KeyError, IndexError, ValueError):
+        return "session-coord"
+
+
 @dataclass
 class Coord:
     run: Exec = default_exec
-    binary: str = "session-coord"
+    binary: str = field(default_factory=find_session_coord)
 
     def available(self) -> bool:
         return shutil.which(self.binary) is not None or self.run is not default_exec

@@ -126,7 +126,8 @@ def _needs_oracle(it: Item, st: str) -> bool:
     return st not in graph.FINAL and bool(it.oracle) and not oracles.is_manual(it.oracle)
 
 
-def pulse(plan: Plan, plan_dir: Path, cfg: Config, world: World) -> dict[str, Any]:
+def pulse(plan: Plan, plan_dir: Path, cfg: Config, world: World,
+          oracles_due: bool = True) -> dict[str, Any]:
     """Check oracles and workers, file escalations, and return what changed.
 
     Oracles and session-coord are consulted outside the lock, because a slow `gh` would
@@ -139,7 +140,7 @@ def pulse(plan: Plan, plan_dir: Path, cfg: Config, world: World) -> dict[str, An
 
     verdicts: dict[str, oracles.Verdict] = {}
     for iid, it in plan.items.items():
-        if _needs_oracle(it, sts[iid]):
+        if oracles_due and _needs_oracle(it, sts[iid]):
             cwd = it.repo if it.repo and Path(it.repo).is_dir() else str(plan_dir)
             verdicts[iid] = oracles.check(it.oracle, cwd, world.oracle_run)
 
@@ -150,7 +151,7 @@ def pulse(plan: Plan, plan_dir: Path, cfg: Config, world: World) -> dict[str, An
                 live_by_repo[it.repo] = world.coord.live_sessions(it.repo)
 
     pin_values: dict[str, str | None] = {}
-    for name, pin in plan.pins.items():
+    for name, pin in (plan.pins.items() if oracles_due else ()):
         cwd = pin.repo if pin.repo and Path(pin.repo).is_dir() else str(plan_dir)
         try:
             rc, out = world.oracle_run(["sh", "-c", pin.cmd], cwd, oracles.CMD_TIMEOUT)
@@ -353,6 +354,8 @@ def _escalate(plan: Plan, plan_dir: Path, doc: dict[str, Any], sts: dict[str, st
     recorded so that no restart files it twice. A decision with `ask_when` is held until then."""
     out = []
     repo = doc.get("pm", {}).get("repo") or world.cwd()
+    if not repo:
+        return []  # nowhere to file: no PM attached, and the caller has no project of its own
     for iid, it in plan.items.items():
         if sts[iid] != "ready":
             continue
@@ -761,10 +764,13 @@ def verify(plan: Plan, plan_dir: Path, world: World, iid: str, ok: str = "",
     return outcome
 
 
-def attach(plan_dir: Path, world: World, repo: str, target: str, pane: str = "") -> str:
-    """Record where the PM session is, so worker reports can wake it through session-coord."""
+def attach(plan_dir: Path, world: World, repo: str, target: str, pane: str = "",
+           tmux_session: str = "") -> str:
+    """Record where the PM session is, so worker reports and the watcher can wake it through
+    session-coord, and so the watcher opens worker windows in the PM's tmux session."""
     with store.transaction(plan_dir) as doc:
-        doc["pm"] = {"repo": repo, "target": target, "pane": pane, "since": _iso(world.now())}
+        doc["pm"] = {"repo": repo, "target": target, "pane": pane,
+                     "tmux_session": tmux_session, "since": _iso(world.now())}
     return f"worker reports will message {target} in {repo}"
 
 

@@ -98,6 +98,8 @@ zamu report <id> <running|review|done|stuck> "<line>"   for workers
 zamu mark <id> <done|abandoned|reset> --note "<why>"
 zamu attach --target <pm>   let worker reports wake the PM session
 zamu reap [--go]            list leftover processes; kill those no live worker owns
+zamu watch [--plan] [--exit-on-news]   pulse, autolaunch, wake PMs only with news
+zamu service install|status|uninstall  run the watcher as a systemd user service
 zamu show <id>              one item in full
 zamu check | plans | addendum
 ```

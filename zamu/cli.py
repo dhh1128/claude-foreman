@@ -280,7 +280,8 @@ def cmd_attach(args) -> int:
         raise ConfigError("give --target: this session's name, pane or session id, as "
                           "session-coord msg accepts it.")
     repo = str(Path(args.repo or os.getcwd()).expanduser().resolve())
-    print(engine.attach(d, world(), repo, target, os.environ.get("TMUX_PANE", "")))
+    print(engine.attach(d, world(), repo, target, os.environ.get("TMUX_PANE", ""),
+                        _tmux_session()))
     return 0
 
 
@@ -299,6 +300,63 @@ def cmd_reap(args) -> int:
     if lines and not args.go and any(l.startswith("would kill") for l in lines):
         print("# dry run: nothing was killed. Add --go to kill the ones marked 'would kill'.")
     return 0
+
+
+def cmd_watch(args) -> int:
+    from . import watch
+    try:
+        return watch.run(args.plan, args.interval, args.oracle_interval, args.once,
+                         args.exit_on_news, world)
+    except watch.AlreadyRunning as e:
+        print(f"zamu: {e}", file=sys.stderr)
+        return 75
+
+
+def _systemctl(*a: str) -> tuple[int, str]:
+    try:
+        r = subprocess.run(["systemctl", "--user", *a], capture_output=True, text=True, timeout=30)
+        return r.returncode, (r.stdout + r.stderr).strip()
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return 127, str(e)
+
+
+def cmd_service(args) -> int:
+    from . import watch
+    root = Path(__file__).resolve().parents[1]
+    env = {k: os.environ[k] for k in watch.SERVICE_ENV if os.environ.get(k)}
+    shim, shim_body, unit, unit_body = watch.service_files(root, env)
+    if args.action == "install":
+        if args.dry_run:
+            print(f"# {shim}\n{shim_body}\n# {unit}\n{unit_body}")
+            return 0
+        shim.parent.mkdir(parents=True, exist_ok=True)
+        shim.write_text(shim_body)
+        shim.chmod(0o755)
+        unit.parent.mkdir(parents=True, exist_ok=True)
+        unit.write_text(unit_body)
+        for step in (("daemon-reload",), ("enable", "--now", watch.UNIT)):
+            rc, out = _systemctl(*step)
+            if rc != 0:
+                print(f"zamu: systemctl --user {' '.join(step)} failed: {out}\nWithout systemd, "
+                      "run `zamu watch` yourself, or from a PM session as a background task with "
+                      "--exit-on-news.", file=sys.stderr)
+                return 2
+        print(f"installed and started {watch.UNIT}; it runs {shim} watch")
+        return 0
+    if args.action == "uninstall":
+        _systemctl("disable", "--now", watch.UNIT)
+        for p in (unit, shim):
+            if p.exists():
+                p.unlink()
+        _systemctl("daemon-reload")
+        print(f"removed {watch.UNIT}")
+        return 0
+    rc, out = _systemctl("is-active", watch.UNIT)
+    print(f"{watch.UNIT}: {out or 'unknown'}")
+    logf = config.home() / "watch.log"
+    if logf.exists():
+        print("\n".join(logf.read_text().splitlines()[-5:]))
+    return 0 if out == "active" else 3
 
 
 def cmd_addendum(args) -> int:
@@ -409,6 +467,21 @@ def build_parser() -> argparse.ArgumentParser:
     plan_arg(s)
     s.add_argument("--go", action="store_true")
     s.set_defaults(func=cmd_reap)
+    s = sub.add_parser("watch", help="the mechanical loop: pulse, autolaunch, wake PMs only "
+                       "with news (all plans unless --plan)")
+    plan_arg(s)
+    s.add_argument("--interval", type=float, default=30.0, help="seconds between ticks")
+    s.add_argument("--oracle-interval", type=float, default=300.0,
+                   help="seconds between oracle and pin checks, which may call gh or git")
+    s.add_argument("--once", action="store_true", help="one tick, print any news, exit")
+    s.add_argument("--exit-on-news", action="store_true",
+                   help="print the news and exit instead of messaging the PM: for a PM running "
+                        "this as a background task")
+    s.set_defaults(func=cmd_watch)
+    s = sub.add_parser("service", help="run `zamu watch` as a systemd user service")
+    s.add_argument("action", choices=["install", "uninstall", "status"])
+    s.add_argument("--dry-run", action="store_true", help="print the files install would write")
+    s.set_defaults(func=cmd_service)
     s = sub.add_parser("addendum", help="print this machine's local rules for the skill")
     s.set_defaults(func=cmd_addendum)
     return p

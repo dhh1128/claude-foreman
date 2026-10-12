@@ -90,6 +90,9 @@ class Plan:
     common_brief: str = ""
     due: dt.date | None = None
     max_workers: int | None = None
+    #: Let `zamu watch` launch ready build items into free slots by itself. Set it once the
+    #: user has approved a dry run of this plan's launches.
+    autolaunch: bool = False
     #: Standing rules for this plan, set by the user mid-run; the PM reads and applies them.
     rules: str = ""
     #: Documents the PM itself maintains -- coordination work, as opposed to the items' work.
@@ -245,7 +248,7 @@ def parse(text: str, path: Path, name: str | None = None) -> Plan:
     rules = str(meta.get("rules", "")).strip()
     plan = Plan(name=name or str(meta.get("name") or base.name), path=path, items=items,
                 common_brief=_path(str(meta.get("common_brief", "")), base),
-                due=plan_due, max_workers=mw,
+                due=plan_due, max_workers=mw, autolaunch=bool(meta.get("autolaunch", False)),
                 rules=_path(rules, base) if rules else str(base / "rules.md"),
                 owns=tuple(_path(o, base) for o in _strs(meta.get("owns"), f"{path} [plan]", "owns")),
                 pins=pins)

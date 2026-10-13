@@ -78,6 +78,8 @@ class Config:
     #: A command asked before each launch: exit 0 admit, 75 not now, anything else could not
     #: look (the count cap alone then applies). Empty: the count cap alone.
     admission: tuple[str, ...] = ()
+    #: engine name -> most live workers of that engine across all plans, e.g. {"claude": 2}
+    engine_caps: dict = field(default_factory=dict)
 
     def __post_init__(self):
         if "claude" not in self.engines:
@@ -118,6 +120,9 @@ def load() -> Config:
         a = kw["admission"]
         import shlex
         kw["admission"] = tuple(shlex.split(a) if isinstance(a, str) else a)
+    caps = kw.get("engine_caps", {})
+    if not isinstance(caps, dict) or not all(isinstance(v, int) and v >= 0 for v in caps.values()):
+        raise ConfigError("[engine_caps] maps an engine name to a non-negative integer.")
     engines = kw.get("engines", {})
     if not isinstance(engines, dict):
         raise ConfigError("[engines] must map an engine name to a command list.")

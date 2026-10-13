@@ -416,6 +416,37 @@ def _busy(items: dict[str, Any], states: dict[str, str] | None = None) -> set[st
     return busy
 
 
+def engine_load(plan: Plan, doc: dict[str, Any]) -> dict[str, int]:
+    """Live workers per engine across every plan: this plan's from `doc`, others' from disk."""
+    from . import config
+    counts: dict[str, int] = {}
+
+    def add(items: dict[str, Any], engines: dict[str, str]) -> None:
+        seen = set()
+        for iid, rec in items.items():
+            if (rec.get("state") in graph.ACTIVE and (rec.get("session") or rec.get("pane")
+                                                       or rec.get("wid"))
+                    and rec.get("worker") != "dead"):
+                w = rec.get("wid") or iid
+                if w not in seen:
+                    seen.add(w)
+                    e = rec.get("engine") or engines.get(iid, "claude")
+                    counts[e] = counts.get(e, 0) + 1
+
+    add(doc.get("items", {}), {i: it.engine for i, it in plan.items.items()})
+    here = plan.path.parent.resolve()
+    root = config.plans_dir()
+    if root.is_dir():
+        for d in root.iterdir():
+            try:
+                if d.resolve() == here or not (d / "state.json").exists():
+                    continue
+                add(store.read(d).get("items", {}), {})
+            except (OSError, store.StoreError):
+                continue
+    return counts
+
+
 def busy_elsewhere(plan: Plan) -> dict[str, int]:
     """Live workers in every OTHER plan under the state root, by plan name.
 
@@ -512,6 +543,10 @@ def prepare(plan: Plan, plan_dir: Path, cfg: Config, world: World, ids: list[str
                 raise EngineError(f"{iid} is {sts[iid]}, not ready.")
             if used >= cap:
                 raise EngineError(f"{used} of {cap} workers are live; {iid} waits for a slot.")
+            ecap = cfg.engine_caps.get(it.engine)
+            if ecap is not None and engine_load(plan, doc).get(it.engine, 0) >= ecap:
+                raise EngineError(f"{ecap} {it.engine} worker(s) are live, its cap; {iid} waits "
+                                  f"(or set engine = \"<another>\" on it).")
             used += 1
         kept = rec.get("worktree", "") if relaunch else ""
         if kept and not launch_mod.worktree_exists(kept):
@@ -540,7 +575,11 @@ def ready_to_fill(plan: Plan, plan_dir: Path, cfg: Config,
     filling every slot on one reading would admit them all against the same idle moment."""
     doc = store.read(plan_dir)
     used, cap = slots(plan, doc, cfg)
-    ready = graph.launchable(plan, graph.states(plan, doc))[:max(cap - used, 0)]
+    load = engine_load(plan, doc) if cfg.engine_caps else {}
+    ready = [i for i in graph.launchable(plan, graph.states(plan, doc))
+             if plan.items[i].engine not in cfg.engine_caps
+             or load.get(plan.items[i].engine, 0) < cfg.engine_caps[plan.items[i].engine]]
+    ready = ready[:max(cap - used, 0)]
     if ready and cfg.admission and world is not None:
         ok, _why = admit(cfg, world)
         return [] if ok is False else ready[:1]
@@ -562,6 +601,7 @@ def commit_launch(plan: Plan, plan_dir: Path, cfg: Config, world: World,
         got = launch_mod.execute(ln, world.run)
         rec = _rec(doc, ln.item)
         engine = plan.items[ln.item].engine
+        rec["engine"] = engine
         rec.update({"state": rec.get("state") if ln.resume or rec.get("state") in graph.ACTIVE
                     else "running",
                     "session": ln.session if engine == "claude" else ln.token,
@@ -634,7 +674,8 @@ def assign(plan: Plan, plan_dir: Path, world: World, iid: str, wid: str, note: s
             raise EngineError(f"{iid} already has a worker ({rec['session']}); "
                               f"`zamu mark {iid} reset` first if that one is gone.")
         rec.update({"state": rec.get("state") if sts[iid] in graph.ACTIVE else "running",
-                    "wid": wid, "session": w.get("session", ""), "pane": w.get("pane", ""),
+                    "wid": wid, "engine": w.get("engine", "claude"),
+                    "session": w.get("session", ""), "pane": w.get("pane", ""),
                     "worktree": w.get("worktree") or f"{it.repo.rstrip('/')}/.worktrees/{it.topic}",
                     "launched": _iso(now), "last_report": _iso(now), "worker": "starting",
                     "last_line": note or f"assigned to {wid}"})

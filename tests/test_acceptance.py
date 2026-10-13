@@ -604,3 +604,19 @@ def test_the_cap_is_the_machines_and_counts_workers_in_every_plan(w):
     assert r.returncode == 2 and "2 of 2 workers are live" in r.stderr
     w.zamu("mark", "--plan", "roadmap", "app-upstream", "done", env=cap)
     assert json.loads(w.zamu("board", "--plan", "second", "--json", env=cap).stdout)["slots"] == 1
+
+
+def test_an_engine_cap_holds_across_plans_and_other_engines_still_launch(w):
+    Path(os.environ["ZAMU_CONFIG"]).write_text(
+        '[engine_caps]\nclaude = 1\n[engines]\ncodex = ["codex"]\n')
+    w.zamu("adopt", "app-decisions", "--session", "s1")  # one live claude worker
+    p = w.plan_dir / "plan.toml"
+    w.signal("lib-0.10.0")
+    w.zamu("pulse")
+    r = w.zamu("launch", "core-lib", check=False)
+    assert r.returncode == 2 and "1 claude worker(s) are live, its cap" in r.stderr
+    p.write_text(p.read_text().replace('[items.core-lib]\n', '[items.core-lib]\nengine = "codex"\n'))
+    assert " codex 'You are the worker session" in w.zamu("launch", "core-lib").stdout
+    # --ready skips claude items while claude is at its cap, and still offers codex ones.
+    out = w.zamu("launch", "--ready").stdout
+    assert "core-lib" in out and "relay-lib" not in out

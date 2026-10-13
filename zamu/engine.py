@@ -126,29 +126,41 @@ def _needs_oracle(it: Item, st: str) -> bool:
     return st not in graph.FINAL and bool(it.oracle) and not oracles.is_manual(it.oracle)
 
 
-def _report_lines(path: Path, offset: int) -> list[tuple[int, str]] | None:
-    """Return complete lines and byte offsets; None when the saved stream cannot be read."""
+@dataclass(frozen=True)
+class ReportRead:
+    identity: tuple[int, int] | None
+    restarted: bool
+    lines: tuple[tuple[int, str], ...]
+    digest: str
+
+
+def _report_lines(path: Path, offset: int, identity: list[int] | None,
+                  digest: str) -> ReportRead | None:
+    """Read complete lines, restarting if the consumed prefix was replaced or rewritten."""
     try:
         with path.open("rb") as f:
-            f.seek(0, os.SEEK_END)
-            size = f.tell()
-            if offset > size:
-                return None
-            f.seek(offset)
+            stat = os.fstat(f.fileno())
+            file_id = (stat.st_dev, stat.st_ino)
             data = f.read()
     except FileNotFoundError:
-        return None if offset else []
+        return None if offset else ReportRead(None, False, (), "")
     except OSError:
         return None
+    prefix_matches = offset <= len(data) and bool(digest) and \
+        hashlib.sha256(data[:offset]).hexdigest() == digest
+    restarted = offset > len(data) or (offset > 0 and bool(digest) and not prefix_matches) or \
+        (offset > 0 and identity is not None and tuple(identity) != file_id and not prefix_matches)
+    start = 0 if restarted else offset
     out = []
-    pos = offset
-    for raw in data.split(b"\n")[:-1]:
+    pos = start
+    for raw in data[start:].split(b"\n")[:-1]:
         pos += len(raw) + 1
         try:
             out.append((pos, raw.removesuffix(b"\r").decode("utf-8")))
         except UnicodeDecodeError:
             out.append((pos, ""))
-    return out
+    return ReportRead(file_id, restarted, tuple(out),
+                      hashlib.sha256(data[:pos]).hexdigest())
 
 
 def _parse_report_line(raw: str) -> tuple[dt.datetime, str, str] | None:
@@ -173,25 +185,28 @@ def pulse(plan: Plan, plan_dir: Path, cfg: Config, world: World,
     snap = store.read(plan_dir)
     sts = graph.states(plan, snap)
 
-    file_reports: dict[str, tuple[str, str, int, list[tuple[int, str, tuple | None, oracles.Verdict | None]], str]] = {}
+    file_reports: dict[str, tuple[str, str, int, list[int] | None, str, ReportRead | None,
+                                  list[tuple[int, str, tuple | None, oracles.Verdict | None]]]] = {}
     for iid, it in plan.items.items():
         rec = snap["items"].get(iid, {})
         if sts[iid] not in graph.ACTIVE or not rec.get("worktree"):
             continue
         path = Path(rec["worktree"]) / ".zamu" / "reports"
         path_str = str(path)
-        offset = rec.get("report_offset", 0) if rec.get("report_path", path_str) == path_str else 0
-        lines = _report_lines(path, offset)
-        error = f"{path}: cannot read reports from byte {offset}; inspect the file" if lines is None else ""
+        same_path = rec.get("report_path", path_str) == path_str
+        offset = rec.get("report_offset", 0) if same_path else 0
+        old_id = rec.get("report_identity") if same_path else None
+        old_digest = rec.get("report_digest", "") if same_path else ""
+        read = _report_lines(path, offset, old_id, old_digest)
         pending = []
-        for end, raw in lines or []:
+        for end, raw in read.lines if read is not None else ():
             parsed = _parse_report_line(raw)
             verdict = None
             if parsed and parsed[1] == "done" and it.oracle and not oracles.is_manual(it.oracle):
                 cwd = it.repo if it.repo and Path(it.repo).is_dir() else str(plan_dir)
                 verdict = oracles.check(it.oracle, cwd, world.oracle_run)
             pending.append((end, raw, parsed, verdict))
-        file_reports[iid] = rec["worktree"], path_str, offset, pending, error
+        file_reports[iid] = rec["worktree"], path_str, offset, old_id, old_digest, read, pending
 
     verdicts: dict[str, oracles.Verdict] = {}
     for iid, it in plan.items.items():
@@ -217,20 +232,29 @@ def pulse(plan: Plan, plan_dir: Path, cfg: Config, world: World,
     changes: list[str] = []
     messages: list[tuple[str, str]] = []
     with store.transaction(plan_dir) as doc:
-        for iid, (worktree, path, start, pending, error) in file_reports.items():
+        for iid, (worktree, path, start, old_id, old_digest, read, pending) in file_reports.items():
             rec = _rec(doc, iid)
             if (graph.states(plan, doc)[iid] not in graph.ACTIVE or
                     rec.get("worktree") != worktree or
-                    (rec.get("report_offset", 0) if rec.get("report_path", path) == path else 0) != start):
+                    (rec.get("report_offset", 0) if rec.get("report_path", path) == path else 0) != start or
+                    (rec.get("report_identity") if rec.get("report_path", path) == path else None) != old_id or
+                    (rec.get("report_digest", "") if rec.get("report_path", path) == path else "") != old_digest):
                 continue
             if rec.get("report_path") != path:
                 rec["report_path"] = path
                 rec["report_offset"] = 0
+                rec.pop("report_identity", None)
+                rec.pop("report_digest", None)
                 rec.pop("report_file_errors", None)
-            if error:
-                rec.setdefault("report_file_errors", [])
-                if error not in rec["report_file_errors"]:
-                    rec["report_file_errors"].append(error)
+            if read is None:
+                rec["report_read_error"] = f"{path}: cannot read reports from byte {start}; inspect the file"
+                continue
+            rec.pop("report_read_error", None)
+            if read.identity is not None:
+                rec["report_identity"] = list(read.identity)
+            if read.restarted:
+                rec["report_offset"] = 0
+                _event(plan_dir, now, iid, "report_file_restart", path=path)
             for end, raw, parsed, verdict in pending:
                 if parsed is None:
                     reason = f"{path}: malformed report at byte {rec['report_offset']}: {raw[:100]!r}"
@@ -243,6 +267,8 @@ def pulse(plan: Plan, plan_dir: Path, cfg: Config, world: World,
                     if state in ("review", "done") + FLAGS:
                         messages.append((outcome, line))
                 rec["report_offset"] = end
+            if read.identity is not None:
+                rec["report_digest"] = read.digest
         for iid, v in verdicts.items():
             rec = _rec(doc, iid)
             prev = rec.get("oracle", {}).get("ok")

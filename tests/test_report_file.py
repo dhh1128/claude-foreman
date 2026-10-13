@@ -101,6 +101,48 @@ def test_disappeared_file_is_attention_and_does_not_reset_offset(tmp_path):
     assert any(str(reports) in a for a in render.summary(plan, doc, Config(), T0)["attention"])
 
 
+def test_replaced_file_at_same_path_reads_its_first_line(tmp_path):
+    plan, reports, world, _ = setup(tmp_path)
+    reports.write_text("2026-10-13T12:00:00+00:00 running " + "old " * 50 + "\n")
+    pulse(plan, tmp_path, world)
+    old_offset = store.read(tmp_path)["items"]["a"]["report_offset"]
+    reports.unlink()
+    reports.write_text("2026-10-13T12:00:00+00:00 review replacement first\n" +
+                       "2026-10-13T12:00:00+00:00 running " + "new " * 50 + "\n")
+    assert reports.stat().st_size > old_offset
+    pulse(plan, tmp_path, world)
+    rec = store.read(tmp_path)["items"]["a"]
+    assert rec["report_offset"] == reports.stat().st_size
+    assert any(e.get("line") == "replacement first" for e in store.events(tmp_path, "a"))
+
+
+def test_rewritten_file_on_same_inode_reads_from_start(tmp_path):
+    plan, reports, world, _ = setup(tmp_path)
+    reports.write_text("2026-10-13T12:00:00+00:00 running " + "old " * 50 + "\n")
+    pulse(plan, tmp_path, world)
+    old_inode = reports.stat().st_ino
+    reports.write_text("2026-10-13T12:00:00+00:00 review rewritten first\n" +
+                       "2026-10-13T12:00:00+00:00 running " + "new " * 50 + "\n")
+    assert reports.stat().st_ino == old_inode
+    pulse(plan, tmp_path, world)
+    assert any(e.get("line") == "rewritten first" for e in store.events(tmp_path, "a"))
+
+
+def test_transient_read_error_clears_after_a_successful_read(tmp_path, monkeypatch):
+    plan, reports, world, _ = setup(tmp_path)
+    reports.write_text("2026-10-13T12:00:00+00:00 running recovered\n")
+    actual_read = engine._report_lines
+    monkeypatch.setattr(engine, "_report_lines", lambda *args: None)
+    pulse(plan, tmp_path, world)
+    assert any("cannot read reports" in a for a in
+               render.summary(plan, store.read(tmp_path), Config(), T0)["attention"])
+    monkeypatch.setattr(engine, "_report_lines", actual_read)
+    pulse(plan, tmp_path, world)
+    assert store.read(tmp_path)["items"]["a"]["last_line"] == "recovered"
+    assert not any("cannot read reports" in a for a in
+                   render.summary(plan, store.read(tmp_path), Config(), T0)["attention"])
+
+
 def test_malformed_line_is_attention_and_does_not_hide_later_reports(tmp_path):
     plan, reports, world, _ = setup(tmp_path)
     reports.write_text("not a report\n2026-10-13T12:00:00+00:00 waiting Daniel must decide\n")

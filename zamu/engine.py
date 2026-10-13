@@ -13,7 +13,7 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable
 
@@ -973,9 +973,113 @@ def attach(plan_dir: Path, world: World, repo: str, target: str, pane: str = "",
     """Record where the PM session is, so worker reports and the watcher can wake it through
     session-coord, and so the watcher opens worker windows in the PM's tmux session."""
     with store.transaction(plan_dir) as doc:
+        old = doc.get("pm", {})
         doc["pm"] = {"repo": repo, "target": target, "pane": pane,
-                     "tmux_session": tmux_session, "since": _iso(world.now())}
+                     "tmux_session": tmux_session, "since": _iso(world.now()),
+                     "status": "attached", "ask_count": old.get("ask_count", 0),
+                     "dead_ask": old.get("dead_ask", "")}
     return f"worker reports will message {target} in {repo}"
+
+
+def prepare_pm(plan: Plan, plan_dir: Path, cfg: Config, world: World, action: str,
+               tmux_session: str = "") -> launch_mod.Launch:
+    """The command for a fresh PM, after checking the previous target when there is one."""
+    brief = plan_dir / "pm.md"
+    if not brief.is_file():
+        raise EngineError(f"{brief} is missing; write the plan's standing PM brief first.")
+    pm = store.read(plan_dir).get("pm", {})
+    repo = pm.get("repo") or world.cwd()
+    session = tmux_session or pm.get("tmux_session", "")
+    if not repo:
+        raise EngineError("no PM repo is recorded and the current directory is unavailable.")
+    if not session:
+        raise EngineError("no PM tmux session is recorded; give --tmux-session.")
+    if pm.get("status") == "starting":
+        raise EngineError("a PM was just started; wait for it to attach before starting another.")
+    target = pm.get("target", "")
+    if target:
+        live = world.coord.live_target(repo, target)
+        if live is None:
+            raise EngineError(f"could not check whether PM {target} is alive; retry when session-coord answers.")
+        if live:
+            raise EngineError(f"PM {target} is still alive; close it before starting another.")
+    elif action == "restart":
+        raise EngineError("no PM has been attached to restart; use `zamu pm start`.")
+    return replace(launch_mod.plan_pm_launch(plan, repo, session, cfg.engines["claude"]),
+                   pm_guard=(target, pm.get("status", ""), pm.get("since", "")))
+
+
+def commit_pm(plan: Plan, plan_dir: Path, cfg: Config, world: World,
+              ln: launch_mod.Launch, action: str) -> dict[str, str]:
+    """Start the PM and record the fresh target under the plan lock."""
+    # Recheck just before the state transaction, including session-coord's liveness answer.
+    current = prepare_pm(plan, plan_dir, cfg, world, action, ln.tmux_session)
+    if current.worktree != ln.worktree or current.pm_guard != ln.pm_guard:
+        raise EngineError("the PM attachment changed since planning the launch; run the command again.")
+    with store.transaction(plan_dir) as doc:
+        pm = doc.get("pm", {})
+        if (pm.get("target", ""), pm.get("status", ""), pm.get("since", "")) != ln.pm_guard:
+            raise EngineError("the PM attachment changed while launching; run the command again.")
+        got = launch_mod.execute(ln, world.run)
+        doc["pm"] = {**pm, "repo": ln.worktree, "target": ln.session, "pane": got.get("pane", ""),
+                     "tmux_session": ln.tmux_session,
+                     "status": "starting", "since": _iso(world.now())}
+    return got
+
+
+def check_pm(plan: Plan, plan_dir: Path, cfg: Config, world: World) -> list[str]:
+    """Watch the attached PM and file one recovery ask for each confirmed outage."""
+    snap = store.read(plan_dir)
+    recorded = snap.get("pm", {})
+    repo, target = recorded.get("repo", ""), recorded.get("target", "")
+    if not repo or not target:
+        return []
+    alive = world.coord.live_target(repo, target)
+    if alive is None:
+        return []  # not seeing the board is not proof of death
+    now = world.now()
+    changes = []
+    with store.transaction(plan_dir) as doc:
+        pm = doc.get("pm", {})
+        if pm.get("repo") != repo or pm.get("target") != target:
+            return []  # an attach or launch changed the PM while we looked
+        if alive:
+            if pm.get("status") != "live":
+                changes.append("PM seen alive")
+            pm["status"] = "live"
+            pm.pop("dead_ask", None)
+            pm.pop("ask_error", None)
+            return changes
+        since = _parse(pm.get("since", ""))
+        if (pm.get("status") == "starting" and since and
+                now - since < dt.timedelta(minutes=cfg.launch_grace_minutes)):
+            return []
+        if pm.get("status") != "dead":
+            changes.append("PM gone")
+        pm["status"] = "dead"
+        if pm.get("dead_ask") or cfg.escalate != "session-coord":
+            return changes
+        from . import render
+        sts = graph.states(plan, doc)
+        active = any(state in graph.ACTIVE for state in sts.values())
+        attention = [line for line in render.summary(plan, doc, cfg, now)["attention"]
+                     if not line.startswith(("PM gone", "PM recovery escalation"))]
+        if not active and not attention:
+            return changes
+        count = pm.get("ask_count", 0) + 1
+        tag = ask_tag(plan, f"pm-gone-{count}", "A")
+        prompt = f"The PM for plan {plan.name} is gone; run `zamu pm restart {plan.name}`."
+        ok, note = world.coord.ask_add(repo, tag, "A", prompt)
+        if ok:
+            pm["ask_count"] = count
+            pm["dead_ask"] = tag
+            pm.pop("ask_error", None)
+            changes.append(f"PM recovery escalated as {tag}")
+            _event(plan_dir, now, "pm", "pm_gone", tag=tag, repo=repo, note=note)
+        else:
+            pm["ask_error"] = note
+            changes.append(f"PM recovery escalation failed: {note}")
+    return changes
 
 
 def stalled(plan: Plan, doc: dict[str, Any], cfg: Config, now: dt.datetime) -> list[str]:

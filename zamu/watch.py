@@ -105,6 +105,8 @@ def tick(plan_dir: Path, cfg: config.Config, base_world: Callable[[], engine.Wor
             except (engine.EngineError, LaunchError, OSError) as e:
                 t.errors.append(f"could not launch {iid}: {e}")
 
+    t.changes += engine.check_pm(plan, plan_dir, cfg, w)
+
     with store.transaction(plan_dir) as doc:
         now = w.now()
         lines = render.summary(plan, doc, cfg, now)["attention"]
@@ -114,7 +116,7 @@ def tick(plan_dir: Path, cfg: config.Config, base_world: Callable[[], engine.Wor
         doc["watch"]["notified"] = sorted(current)
         doc["watch"]["last_tick"] = engine._iso(now)
         pm = dict(doc.get("pm", {}))
-    if notify and t.news and pm.get("repo") and pm.get("target"):
+    if notify and t.news and pm.get("repo") and pm.get("target") and pm.get("status") != "dead":
         ok, why = w.coord.msg(pm["repo"], pm["target"], t.digest())
         if not ok:
             t.errors.append(f"could not message the PM: {why}")

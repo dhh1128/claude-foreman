@@ -23,6 +23,9 @@ class FakeCoord(Coord):
     def live_sessions(self, repo):
         return None
 
+    def live_target(self, repo, target):
+        return None
+
     def ask_add(self, repo, tag, kind, text, depends_on=()):
         return True, f"filed {tag}"
 

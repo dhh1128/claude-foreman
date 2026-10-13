@@ -47,6 +47,8 @@ Do not read workers' transcripts or logs. If one item needs more, `zamu show <id
 zamu attach --target "<this session's name>"
 ```
 
+The plan's `pm.md` is the standing brief for this role. `zamu pm start <plan> --tmux-session <session>` previews a fresh PM window; add `--go` to run it. `zamu pm restart <plan> --go` replaces a dead PM using that brief and the state on disk. The watcher files a recovery ask when an attached PM disappears while work or attention remains; restarting it is Daniel's call.
+
 ## Launching
 
 ```

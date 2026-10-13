@@ -26,6 +26,8 @@ zamu init roadmap                     # ~/.local/state/zamu/plans/roadmap/plan.t
 zamu init roadmap --dir ~/private/plans/roadmap   # kept in a private repo, linked by name
 ```
 
+`init` also writes `pm.md` beside `plan.toml`. Fill in that standing PM brief with the plan's context, peers and rules so a replacement session can take over from disk.
+
 ```toml
 [plan]
 due = 2026-11-17
@@ -97,6 +99,10 @@ zamu rules [--add TEXT --source ASK]   the plan's standing rules
 zamu report <id> <running|review|done|stuck> "<line>"   for workers
 zamu mark <id> <done|abandoned|reset> --note "<why>"
 zamu attach --target <pm>   let worker reports wake the PM session
+zamu pm start <plan> --tmux-session <session>       preview a fresh PM window
+zamu pm start <plan> --tmux-session <session> --go  start it
+zamu pm restart <plan>       preview replacement of a dead PM
+zamu pm restart <plan> --go  start the replacement
 zamu reap [--go]            list leftover processes; kill those no live worker owns
 zamu watch [--plan] [--exit-on-news]   pulse, autolaunch, wake PMs only with news
 zamu service install|status|uninstall  run the watcher as a systemd user service
@@ -104,9 +110,11 @@ zamu show <id>              one item in full
 zamu check | plans | addendum
 ```
 
+PM commands use the tmux session and repo recorded by `attach`; `--tmux-session` overrides the session and is required when the plan has no prior attachment. On a plan's first start, run the command from the repo the PM should use. Both commands default to a dry run. The watcher files an `A` ask to restart a PM when its session has disappeared and the plan has active workers or attention; it never starts one automatically.
+
 ## Where it keeps things
 
-`~/.local/state/zamu/plans/<name>/`: `plan.toml` (yours), `state.json` and `events.jsonl` (zamu's). Override the root with `ZAMU_HOME`. Workers' worktrees are `<repo>/.worktrees/<topic>`.
+`~/.local/state/zamu/plans/<name>/`: `plan.toml` and `pm.md` (yours), `state.json` and `events.jsonl` (zamu's). Override the root with `ZAMU_HOME`. Workers' worktrees are `<repo>/.worktrees/<topic>`.
 
 A worker confined to its worktree can append a newline terminated report to `<worktree>/.zamu/reports`: `<ISO time> <running|review|done|stuck|waiting> <one line>`. Each pulse reads complete new lines from active workers and handles them like `zamu report`. zamu creates `.zamu/.gitignore` when it launches a worktree.
 

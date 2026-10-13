@@ -35,6 +35,11 @@ def summary(plan: Plan, doc: dict[str, Any], cfg: Config, now: dt.datetime) -> d
     used, cap = engine.slots(plan, doc, cfg)
     elsewhere = engine.busy_elsewhere(plan)
     attention: list[str] = []
+    pm = doc.get("pm", {})
+    if pm.get("status") == "dead" and pm.get("dead_ask"):
+        attention.append(f"PM gone; asked {pm['dead_ask']} to run `zamu pm restart {plan.name}`")
+    if pm.get("ask_error"):
+        attention.append(f"PM recovery escalation failed: {_short(pm['ask_error'], 70)}")
     for iid in plan.items:
         r = recs.get(iid, {})
         if sts[iid] in graph.ACTIVE and r.get("worker") == "dead":

@@ -11,8 +11,8 @@ Three choices worth knowing:
   session id before the worker has said anything, and liveness can be checked against
   session-coord's board by id. A relaunch of the same item uses `--resume <uuid>`, so the
   worker comes back with its own conversation rather than starting over.
-- The window runs claude directly, not a shell, so when claude exits the window closes and
-  session-coord sees the session gone. That is what makes a dead worker detectable at all.
+- Claude runs as a child of a shell in the tmux pane so session-coord can see it. The shell
+  remains when Claude exits, while the session disappears from session-coord's board.
 """
 
 from __future__ import annotations
@@ -46,6 +46,8 @@ class Launch:
     resume: bool
     steps: tuple[Step, ...] = field(default=())
     token: str = ""          # carried in the wrapper's argv; proves the worker by its pane
+    tmux_session: str = ""   # for PM launches, recorded again once the window is open
+    pm_guard: tuple[str, str, str] = ("", "", "")  # target, status, since before a PM launch
 
 
 def worker_prompt(plan: Plan, it: Item, worktree: str, resume: bool) -> str:
@@ -74,6 +76,24 @@ def worker_prompt(plan: Plan, it: Item, worktree: str, resume: bool) -> str:
         f"tool, make sure the processes it started (test runners especially) are gone before you "
         f"report review or done; an exited tool can leave them running orphaned in your worktree."
     )
+
+
+def plan_pm_launch(plan: Plan, repo: str, tmux_session: str, claude: Sequence[str]) -> Launch:
+    """Build a fresh PM launch from the brief stored beside the plan."""
+    sid = str(uuid.uuid4())
+    prompt = (f"You are the project manager for zamu plan '{plan.name}' in a background "
+              f"window. Read {plan.path.parent / 'pm.md'} before doing anything else. "
+              f"Load the zamu skill, run `zamu attach --plan {shlex.quote(plan.name)} "
+              f"--repo {shlex.quote(repo)} --target {sid}`, then run "
+              f"`zamu pulse --plan {shlex.quote(plan.name)}`. Continue from the plan's "
+              "on-disk state and brief; this is a fresh session.")
+    cmd = [*claude, "--session-id", sid, prompt]
+    shell = ["sh", "-c", '"$@"; exec "${SHELL:-/bin/sh}" -l', f"zamu-pm:{sid}", *cmd]
+    tmux = ("tmux", "new-window", "-d", "-P", "-F", "#{pane_id}", "-t",
+            f"{tmux_session}:", "-n", f"zamu-{plan.name}", "-c", repo, *shell)
+    return Launch("pm", sid, repo, "", False,
+                  (Step(tmux, "open a window running the PM", capture="pane"),),
+                  token=sid, tmux_session=tmux_session)
 
 
 def plan_launch(plan: Plan, it: Item, *, tmux_session: str, claude: Sequence[str],

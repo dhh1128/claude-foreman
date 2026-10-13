@@ -63,6 +63,11 @@ class Coord:
 
     def live_sessions(self, repo: str) -> set[str] | None:
         """Session ids session-coord considers live in `repo`. None = could not look."""
+        rows = self.board(repo)
+        return None if rows is None else {str(x.get("session_id", "")) for x in rows}
+
+    def board(self, repo: str) -> list[dict] | None:
+        """The swept board, or None when session-coord could not answer reliably."""
         r = self._call(["board", "--repo", repo, "--json"])
         if r is None or r[0] != 0:
             return None
@@ -70,9 +75,19 @@ class Coord:
             rows = json.loads(r[1] or "[]")
         except json.JSONDecodeError:
             return None
-        if not isinstance(rows, list):
+        if (not isinstance(rows, list) or
+                any(not isinstance(x, dict) or not isinstance(x.get("session_id"), str)
+                    or not x["session_id"] for x in rows)):
             return None
-        return {str(x.get("session_id", "")) for x in rows if isinstance(x, dict)}
+        return rows
+
+    def live_target(self, repo: str, target: str) -> bool | None:
+        """Whether the PM's recorded title, pane or session id is on the board."""
+        rows = self.board(repo)
+        if rows is None:
+            return None
+        return any(target in (str(row.get(k, "")) for k in ("title", "pane", "session_id"))
+                   for row in rows)
 
     def ask_add(self, repo: str, tag: str, kind: str, text: str,
                 depends_on: Sequence[str] = ()) -> tuple[bool, str]:

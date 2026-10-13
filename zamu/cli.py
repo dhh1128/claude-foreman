@@ -36,6 +36,29 @@ name = "{name}"
 # estimate = "3d"
 '''
 
+PM_TEMPLATE = '''# PM brief: plan {name}
+
+You are the project manager for this plan. This file is your standing brief; update it when the plan's role, peers, or rules change so a fresh session can take over.
+
+## First
+
+1. Load the `zamu` skill and run `zamu addendum`. Read `skills/zamu/DESIGN.md` in the zamu repository for the decisions behind the tool.
+2. Run `zamu attach --plan {name} --repo <your project repo> --target <this session's id or name>`.
+3. Run `zamu pulse --plan {name}` and act on its attention lines.
+
+## Plan {name}
+
+Describe the plan's purpose, current priorities, critical path, and decisions already made. Keep facts needed by the next PM on disk in the plan and its briefs.
+
+## Peers and standing rules
+
+List the sessions and repositories this PM coordinates with. Record rules for review, merges, approvals, and outside communication here or with `zamu rules`.
+
+## Operations
+
+Watch worker reports, check exit conditions, relay review findings, and keep the plan's owned documents current. Use `zamu board --plan {name}` for the compact state. The watcher launches approved work and calls attention to changes; the PM handles judgement.
+'''
+
 
 def _tmux_session() -> str:
     if not os.environ.get("TMUX"):
@@ -125,6 +148,8 @@ def cmd_init(args) -> int:
     (d / "briefs").mkdir(exist_ok=True)
     if not (d / "plan.toml").exists():
         (d / "plan.toml").write_text(TEMPLATE.format(name=args.name))
+    if not (d / "pm.md").exists():
+        (d / "pm.md").write_text(PM_TEMPLATE.format(name=args.name))
     if args.dir:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.symlink_to(d, target_is_directory=True)
@@ -285,6 +310,22 @@ def cmd_attach(args) -> int:
     return 0
 
 
+def cmd_pm(args) -> int:
+    d = config.resolve_plan_dir(args.name)
+    plan = load(d / "plan.toml", name=d.name)
+    cfg = config.load()
+    w = world()
+    ln = engine.prepare_pm(plan, d, cfg, w, args.action, args.tmux_session or "")
+    for step in ln.steps:
+        print(step.shell())
+    if args.go:
+        got = engine.commit_pm(plan, d, cfg, w, ln, args.action)
+        print(f"# started PM for {plan.name} in pane {got.get('pane', '?')}")
+    else:
+        print("# dry run: nothing was executed. Add --go to start a fresh PM.")
+    return 0
+
+
 def cmd_show(args) -> int:
     plan, d = _load(args)
     if args.item not in plan.items:
@@ -430,6 +471,14 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--repo", help="the PM session's project (default cwd)")
     s.add_argument("--target", help="the PM session's name, pane or id (default $TMUX_PANE)")
     s.set_defaults(func=cmd_attach)
+    s = sub.add_parser("pm", help="start or restart a plan's project manager")
+    pm = s.add_subparsers(dest="action", required=True)
+    for action in ("start", "restart"):
+        ps = pm.add_parser(action, help="open a fresh PM window (dry run unless --go)")
+        ps.add_argument("name", help="plan name or path")
+        ps.add_argument("--tmux-session", help="tmux session for the new PM window")
+        ps.add_argument("--go", action="store_true", help="execute the printed command")
+        ps.set_defaults(func=cmd_pm)
     s = sub.add_parser("show", help="one item in full, with its recent events")
     plan_arg(s)
     s.add_argument("item")

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+from dataclasses import replace
 
 from zamu import engine, render, store
 from zamu.config import Config
@@ -34,7 +35,8 @@ def _setup(tmp_path):
 
 
 def _world(t, ps, activity=None, panes=()):
-    return engine.World(coord=NoCoord(), now=lambda: t, scan=lambda: ps,
+    aged = None if ps is None else [replace(p, age_minutes=60) if not p.age_minutes else p for p in ps]
+    return engine.World(coord=NoCoord(), now=lambda: t, scan=lambda: aged,
                         pane_pids=lambda: None if panes is None else list(panes),
                         pane_activity=lambda p: activity, pane_has_session=lambda p, s: True)
 
@@ -44,10 +46,11 @@ def test_an_orphaned_suite_is_reported_with_its_idleness_and_owner(tmp_path):
     ps = [Proc(901, 1, WT, 50, 7, "python -m pytest -n 8", ""),
           Proc(902, 77, WT, 3, 8, "claude", "bash")]
     res = engine.pulse(plan, tmp_path, Config(), _world(T0, ps))
-    assert res["changes"] == ["leftover pid 901 (a): orphaned"]
+    assert res["changes"] == []
     later = T0 + dt.timedelta(minutes=45)
     res = engine.pulse(plan, tmp_path, Config(), _world(later, ps))
-    assert res["changes"] == []  # already reported; not repeated every wake
+    assert res["changes"] == ["leftover pid 901 (a): orphaned, idle 45m"]
+    assert engine.pulse(plan, tmp_path, Config(), _world(later, ps))["changes"] == []
     doc = store.read(tmp_path)
     (line,) = [a for a in render.summary(plan, doc, Config(), later)["attention"] if "leftover" in a]
     assert "orphaned, idle 45m" in line or ("idle 45m" in line and "orphaned" in line)
@@ -56,6 +59,8 @@ def test_an_orphaned_suite_is_reported_with_its_idleness_and_owner(tmp_path):
 
 def test_a_scan_that_cannot_look_keeps_the_last_findings(tmp_path):
     plan = _setup(tmp_path)
+    with store.transaction(tmp_path) as doc:
+        doc["procs"] = {"901:7": {"cpu": 5, "since": T0.timestamp() - 3600}}
     engine.pulse(plan, tmp_path, Config(), _world(T0, [Proc(901, 1, WT, 5, 7, "x", "")]))
     engine.pulse(plan, tmp_path, Config(), _world(T0, None))
     assert len(store.read(tmp_path)["leftovers"]) == 1
@@ -77,6 +82,8 @@ def test_reap_kills_only_what_no_live_worker_can_own(tmp_path):
     ps = [Proc(901, 1, WT, 5, 7, "pytest", ""),
           Proc(903, 1, "/x/.worktrees/old (deleted)", 5, 9, "pytest", "")]  # orphaned, no pane
     killed = []
+    with store.transaction(tmp_path) as doc:
+        doc["procs"] = {p.key: {"cpu": p.cpu, "since": T0.timestamp() - 3600} for p in ps}
     lines = engine.reap(plan, tmp_path, Config(), _world(T0, ps), go=False)
     assert [l.split()[0] for l in lines] == ["leave", "would"]
     lines = engine.reap(plan, tmp_path, Config(), _world(T0, ps), go=True,
@@ -96,6 +103,8 @@ def test_a_live_session_sitting_in_a_deleted_worktree_is_never_reaped(tmp_path):
           Proc(80, 400, gone, 1, 6, "jshell", "codex"),              # not orphaned
           Proc(90, 1, gone, 1, 7, "jshell", "")]                     # a true leftover
     killed = []
+    with store.transaction(tmp_path) as doc:
+        doc["procs"] = {p.key: {"cpu": p.cpu, "since": T0.timestamp() - 3600} for p in ps}
     engine.reap(plan, tmp_path, Config(), _world(T0, ps, panes=[60]), go=True,
                 kill=lambda p: killed.append(p.pid) or "killed")
     assert killed == [90]
@@ -103,3 +112,30 @@ def test_a_live_session_sitting_in_a_deleted_worktree_is_never_reaped(tmp_path):
     lines = engine.reap(plan, tmp_path, Config(), _world(T0, ps, panes=None), go=True,
                         kill=lambda p: killed.append(p.pid) or "killed")
     assert killed == [] and all(l.startswith("leave") for l in lines)
+
+
+def test_deleted_live_worker_is_reported_only_to_its_own_plan(tmp_path):
+    plan = _setup(tmp_path)
+    other_dir = tmp_path / "state" / "plans" / "other"
+    other_dir.mkdir(parents=True)
+    (other_dir / "plan.toml").write_text(
+        '[items.x]\ntitle="X"\nkind="build"\nrepo="/x"\noracle="manual"\n')
+    other = parse((other_dir / "plan.toml").read_text(), other_dir / "plan.toml")
+    with store.transaction(other_dir) as doc:
+        doc["items"]["x"] = {"state": "running", "session": "sid-x", "wid": "sid-x"}
+    gone = "/x/.worktrees/gone (deleted)"
+    ps = [Proc(70, 1, gone, 1, 5, "sh -c zamu-worker:sid-x", "", 17 / 60),
+          Proc(71, 1, gone, 1, 6, "claude --session-id sid-x", "", 17 / 60)]
+    engine.pulse(plan, tmp_path, Config(), _world(T0, ps))
+    assert store.read(tmp_path)["leftovers"] == []
+    engine.pulse(other, other_dir, Config(), _world(T0, ps))
+    findings = store.read(other_dir)["leftovers"]
+    assert {f["pid"] for f in findings} == {70, 71}
+    assert all(f["item"] == "x" and not f["reapable"] for f in findings)
+    lines = render.summary(other, store.read(other_dir), Config(), T0)["attention"]
+    assert any("live worker in a deleted worktree" in line for line in lines)
+    assert not any("leftover" in line for line in lines)
+    killed = []
+    engine.reap(other, other_dir, Config(), _world(T0, ps), True,
+                kill=lambda p: killed.append(p.pid) or "killed")
+    assert killed == []

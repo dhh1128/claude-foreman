@@ -13,7 +13,8 @@ plan (or one):
 - on a plan with `autolaunch = true`, fill free slots from the ready set;
 - turn the board's attention lines into stable keys, and message the PM through session-coord
   only about what is new since the last message: launches, items that changed state, and new
-  attention. A key that clears and comes back is new again.
+  attention. Busy admission has an episode key: it repeats only after an admission succeeds
+  or an hour has passed.
 
 Run it as a systemd user service (`zamu service install`), one watcher for the whole box, or
 from a PM session as a background task with `--exit-on-news`, in which case it prints the news
@@ -40,6 +41,8 @@ from .launch import LaunchError
 from .plan import PlanError, load
 
 DIGITS = re.compile(r"\d+")
+BUSY_LINE = "launches wait, the box is busy: "
+BUSY_REPEAT = dt.timedelta(hours=1)
 
 
 def key(line: str) -> str:
@@ -102,6 +105,8 @@ def tick(plan_dir: Path, cfg: config.Config, base_world: Callable[[], engine.Wor
                 (ln,) = engine.prepare(plan, plan_dir, cfg, w, [iid])
                 got = engine.commit_launch(plan, plan_dir, cfg, w, ln)
                 t.launched.append(f"{iid} (pane {got.get('pane', '?')})")
+            except engine.BusyError:
+                pass  # a later reading refused; next tick will reconsider admission
             except (engine.EngineError, LaunchError, OSError) as e:
                 t.errors.append(f"could not launch {iid}: {e}")
 
@@ -110,10 +115,18 @@ def tick(plan_dir: Path, cfg: config.Config, base_world: Callable[[], engine.Wor
     with store.transaction(plan_dir) as doc:
         now = w.now()
         lines = render.summary(plan, doc, cfg, now)["attention"]
-        seen = set(doc.setdefault("watch", {}).get("notified", []))
-        current = {key(a): a for a in lines}
+        watch_state = doc.setdefault("watch", {})
+        seen = set(watch_state.get("notified", []))
+        current = {key(a): a for a in lines if not a.startswith(BUSY_LINE)}
         t.attention = [a for k, a in current.items() if k not in seen]
-        doc["watch"]["notified"] = sorted(current)
+        watch_state["notified"] = sorted(current)
+        if doc.get("admission", {}).get("ok") is True:
+            watch_state.pop("busy_notified_at", None)
+        busy = next((a for a in lines if a.startswith(BUSY_LINE)), None)
+        last = engine._parse(watch_state.get("busy_notified_at", ""))
+        if busy and (last is None or now - last >= BUSY_REPEAT):
+            t.attention.append(busy)
+            watch_state["busy_notified_at"] = engine._iso(now)
         doc["watch"]["last_tick"] = engine._iso(now)
         pm = dict(doc.get("pm", {}))
     if notify and t.news and pm.get("repo") and pm.get("target") and pm.get("status") != "dead":

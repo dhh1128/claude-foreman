@@ -65,18 +65,23 @@ def summary(plan: Plan, doc: dict[str, Any], cfg: Config, now: dt.datetime) -> d
             mins = int((now.timestamp() - quiet) // 60)
             if mins >= cfg.pane_quiet_minutes:
                 attention.append(f"{iid}: pane quiet {mins}m; it may be sitting at a prompt")
-    by_item: dict[str, list[dict]] = {}
+    by_item: dict[tuple[str, bool], list[dict]] = {}
     for f in doc.get("leftovers", []):
-        by_item.setdefault(f.get("item", ""), []).append(f)
-    for item, fs in by_item.items():
+        live_deleted = "live worker in a deleted worktree" in f["why"]
+        by_item.setdefault((f.get("item", ""), live_deleted), []).append(f)
+    for (item, live_deleted), fs in by_item.items():
         pids = " ".join(str(f["pid"]) for f in fs[:6]) + (" …" if len(fs) > 6 else "")
         why = sorted({w for f in fs for w in f["why"]})
+        if live_deleted:
+            attention.append(f"{item}: live worker in a deleted worktree, pids {pids}; "
+                             "tell its worker to leave the deleted worktree")
+            continue
         who = (f"{item}: tell its worker to kill them" if item and not all(f["reapable"] for f in fs)
                else f"{item or 'deleted worktrees'}: `zamu reap --go` kills them")
         attention.append(f"{len(fs)} leftover process{'es' if len(fs) > 1 else ''} "
                          f"({', '.join(why)}) pids {pids}; {who}")
     adm = doc.get("admission", {})
-    if adm.get("ok") is False and graph.launchable(plan, sts):
+    if adm.get("ok") is False and engine.admission_can_block(plan, doc, cfg):
         attention.append(f"launches wait, the box is busy: {_short(adm.get('why', ''), 90)}")
     elif adm.get("ok") is None and adm.get("why"):
         attention.append(f"admission unknown, count cap only: {_short(adm['why'], 80)}")

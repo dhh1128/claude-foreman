@@ -59,6 +59,10 @@ class EngineError(RuntimeError):
     """A verb refused. The message says why and what to do instead."""
 
 
+class BusyError(EngineError):
+    """Admission refused a launch; a watcher may retry silently next tick."""
+
+
 def _iso(t: dt.datetime) -> str:
     return t.isoformat()
 
@@ -303,12 +307,12 @@ def pulse(plan: Plan, plan_dir: Path, cfg: Config, world: World,
         if cfg.escalate == "session-coord":
             changes += _escalate(plan, plan_dir, doc, sts, world, now)
         _quiet_panes(plan, doc, sts, world)
-        if cfg.admission and graph.launchable(plan, graph.states(plan, doc)):
+        if cfg.admission and admission_can_block(plan, doc, cfg):
             ok, why = admit(cfg, world)
             doc["admission"] = {"ok": ok, "why": why, "at": _iso(now)}
         else:
             doc.pop("admission", None)
-        changes += _leftovers(plan, doc, graph.states(plan, doc), cfg, world, now)
+        changes += _leftovers(plan, plan_dir, doc, graph.states(plan, doc), cfg, world, now)
         pm = dict(doc.get("pm", {}))
     for outcome, line in messages:
         _message_pm(pm, world, plan.name, outcome, line)
@@ -422,7 +426,24 @@ def trees(plan: Plan, doc: dict[str, Any], sts: dict[str, str]) -> dict[str, tup
     return out
 
 
-def _leftovers(plan: Plan, doc: dict[str, Any], sts: dict[str, str], cfg: Config,
+def worker_identities(plan: Plan, plan_dir: Path, doc: dict[str, Any],
+                      sts: dict[str, str]) -> dict[str, tuple[str, str, str]]:
+    """Map explicit process tokens and session ids to their launching plan and item."""
+    from . import config
+    result = {}
+    dirs = [plan_dir] + [config.plans_dir() / n for n in config.known_plans()
+                         if (config.plans_dir() / n).resolve() != plan_dir.resolve()]
+    for d in dirs:
+        state = doc if d == plan_dir else store.read(d)
+        for iid, rec in state.get("items", {}).items():
+            for ident in (rec.get("session"), rec.get("token"), rec.get("wid")):
+                if ident:
+                    status = sts.get(iid, "") if d == plan_dir else rec.get("state", "")
+                    result[ident] = (plan.name if d == plan_dir else d.name, iid, status)
+    return result
+
+
+def _leftovers(plan: Plan, plan_dir: Path, doc: dict[str, Any], sts: dict[str, str], cfg: Config,
                world: World, now: dt.datetime) -> list[str]:
     ps = world.scan()
     if ps is None:
@@ -432,14 +453,18 @@ def _leftovers(plan: Plan, doc: dict[str, Any], sts: dict[str, str], cfg: Config
     roots = world.pane_pids()
     found = procs_mod.analyse(ps, t, doc.get("procs", {}), epoch, cfg.idle_minutes,
                               own_pids=(os.getpid(),),
-                              protected=None if roots is None else procs_mod.protected_pids(ps, roots))
+                              protected=None if roots is None else procs_mod.protected_pids(ps, roots),
+                              identities=worker_identities(plan, plan_dir, doc, sts),
+                              plan_name=plan.name)
     doc["procs"] = procs_mod.next_cpu_record(ps, doc.get("procs", {}), epoch, t)
     before = {f["key"] for f in doc.get("leftovers", [])}
     doc["leftovers"] = [{"key": f.proc.key, "pid": f.proc.pid, "item": f.item,
                          "why": list(f.why), "cwd": f.proc.cwd, "cmd": f.proc.cmd[:120],
                          "reapable": f.reapable} for f in found]
     new = [f for f in found if f.proc.key not in before]
-    return [f"leftover pid {f.proc.pid} ({f.item or 'no item'}): {', '.join(f.why)}"
+    return [(f"live worker in a deleted worktree pid {f.proc.pid} ({f.item})"
+             if "live worker in a deleted worktree" in f.why else
+             f"leftover pid {f.proc.pid} ({f.item or 'no item'}): {', '.join(f.why)}")
             for f in new]
 
 
@@ -601,6 +626,17 @@ def slots(plan: Plan, doc: dict[str, Any], cfg: Config) -> tuple[int, int]:
     return own + others, cap
 
 
+def admission_can_block(plan: Plan, doc: dict[str, Any], cfg: Config) -> bool:
+    """A ready item has room under both the machine and its engine cap."""
+    used, cap = slots(plan, doc, cfg)
+    if used >= cap:
+        return False
+    load = engine_load(plan, doc) if cfg.engine_caps else {}
+    return any(plan.items[i].engine not in cfg.engine_caps
+               or load.get(plan.items[i].engine, 0) < cfg.engine_caps[plan.items[i].engine]
+               for i in graph.launchable(plan, graph.states(plan, doc)))
+
+
 def admit(cfg: Config, world: World) -> tuple[bool | None, str]:
     """Ask the configured admission command whether the box can take one more worker.
 
@@ -630,7 +666,7 @@ def prepare(plan: Plan, plan_dir: Path, cfg: Config, world: World, ids: list[str
     if not relaunch:
         ok, why = admit(cfg, world)
         if ok is False:
-            raise EngineError(f"the box is busy, so launches wait: {why}")
+            raise BusyError(f"the box is busy, so launches wait: {why}")
     out = []
     for iid in ids:
         it = plan.items.get(iid)
@@ -1104,7 +1140,9 @@ def reap(plan: Plan, plan_dir: Path, cfg: Config, world: World, go: bool,
     roots = world.pane_pids()
     found = procs_mod.analyse(ps, trees(plan, doc, sts), doc.get("procs", {}),
                               world.now().timestamp(), cfg.idle_minutes, own_pids=(os.getpid(),),
-                              protected=None if roots is None else procs_mod.protected_pids(ps, roots))
+                              protected=None if roots is None else procs_mod.protected_pids(ps, roots),
+                              identities=worker_identities(plan, plan_dir, doc, sts),
+                              plan_name=plan.name)
     out = []
     for f in found:
         line = (f"pid {f.proc.pid} [{f.item or 'no item'}] {', '.join(f.why)}: "

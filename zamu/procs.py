@@ -12,10 +12,12 @@ What is checked, all without reading a transcript:
   init process or a subreaper (`systemd --user`): an orphan, its starter gone;
 - one whose working directory has been deleted, which under `.worktrees/` means a worktree
   removed while something still ran in it;
-- and, as a note on either, whether its CPU time has moved since the previous pulse.
+- and whether it is at least the configured idle interval old, with CPU unchanged for that
+  interval across pulses.
 
 Idleness alone is not a finding. A worker's own claude, its shell and its helpers sit in the
-worktree at 0% CPU whenever it waits, and flagging them would bury the real cases.
+worktree at 0% CPU whenever it waits, and flagging them would bury the real cases. Claude
+Code's reparented snapshot shells are also excluded: they are intentional background work.
 
 zamu reports these. It kills only with `reap --go`, and only a process that is orphaned,
 outside every tmux pane, not a claude, and in a deleted directory or under an item that is done
@@ -33,6 +35,7 @@ Linux only (/proc). Elsewhere the scan answers None -- could not look -- and not
 from __future__ import annotations
 
 import os
+import re
 import signal
 import time
 from dataclasses import dataclass
@@ -51,6 +54,7 @@ class Proc:
     start: int          # start time in ticks since boot: with pid, the process's identity
     cmd: str
     parent_cmd: str = ""
+    age_minutes: float = 0.0
 
     @property
     def deleted(self) -> bool:
@@ -82,6 +86,21 @@ class Finding:
     reapable: bool      # true only when no live worker can be waiting on it
 
 
+WORKER_TOKEN = re.compile(r"(?:^|\s)zamu-worker:([^\s'\"]+)")
+SESSION_ID = re.compile(r"(?:^|\s)--session-id\s+([^\s'\"]+)")
+
+
+def worker_id(p: Proc) -> str:
+    """The explicit worker identity in a wrapper or Claude command, if present."""
+    match = WORKER_TOKEN.search(p.cmd) or SESSION_ID.search(p.cmd)
+    return match.group(1) if match else ""
+
+
+def is_claude_background_shell(p: Proc) -> bool:
+    return (p.cmd.startswith(("bash -c ", "/bin/bash -c "))
+            and "source " in p.cmd and ".claude/shell-snapshots/snapshot-bash-" in p.cmd)
+
+
 def protected_pids(procs: Iterable[Proc], roots: Iterable[int]) -> set[int]:
     """Every process at or below the given roots -- tmux pane processes -- plus every claude.
     Nothing in this set is ever reaped."""
@@ -108,35 +127,50 @@ def is_claude(p: Proc) -> bool:
 
 def analyse(procs: Iterable[Proc], trees: Mapping[str, tuple[str, str]],
             previous: Mapping[str, dict], now: float, idle_minutes: float,
-            own_pids: Iterable[int] = (), protected: Iterable[int] | None = None) -> list[Finding]:
-    """`protected` is `protected_pids(...)`; None means the panes could not be listed, and then
-    nothing is reapable at all."""
-    """`trees` maps a worktree path to (item, item state). `previous` is the last pulse's
-    {key: {"cpu": int, "since": epoch}} record of CPU time, so idleness spans pulses."""
+            own_pids: Iterable[int] = (), protected: Iterable[int] | None = None,
+            identities: Mapping[str, tuple[str, str, str]] | None = None,
+            plan_name: str = "") -> list[Finding]:
+    """Find aged idle processes with orphaned or deleted worktrees.
+
+    `protected` is `protected_pids(...)`; None means the panes could not be listed, and then
+    nothing is reapable. `trees` maps worktrees to (item, state). `previous` remembers when
+    CPU last moved. `identities` maps explicit worker ids to (plan, item, state).
+    """
     skip = set(own_pids)
     guard = set(protected) if protected is not None else None
     out = []
     for p in procs:
-        if p.pid in skip:
+        if p.pid in skip or is_claude_background_shell(p):
+            continue
+        identity = (identities or {}).get(worker_id(p))
+        if identity and identity[0] != plan_name:
             continue
         owner = next(((item, st) for root, (item, st) in trees.items() if under(p.path, root)),
                      None)
+        if identity:
+            owner = identity[1], identity[2]
         in_worktrees = "/.worktrees/" in p.path + "/"
         if owner is None and not (p.deleted and in_worktrees):
             continue
+        live_worker = bool(identity and identity[2] in ("running", "review"))
+        prev = previous.get(p.key)
+        idle = prev and prev.get("cpu") == p.cpu and now - prev.get("since", now) >= idle_minutes * 60
+        if not (p.deleted and live_worker) and (p.age_minutes < idle_minutes or not idle):
+            continue
         why = []
-        if p.deleted:
+        if p.deleted and live_worker:
+            why.append("live worker in a deleted worktree")
+        elif p.deleted:
             why.append("its directory was deleted")
-        if p.orphan and owner is not None:
+        if p.orphan and owner is not None and not live_worker:
             why.append("orphaned")
         if not why:
             continue
-        prev = previous.get(p.key)
-        if prev and prev.get("cpu") == p.cpu and now - prev.get("since", now) >= idle_minutes * 60:
+        if idle:
             why.append(f"idle {int((now - prev['since']) // 60)}m")
         item, st = owner if owner else ("", "")
         reapable = (guard is not None and p.pid not in guard and p.orphan and not is_claude(p)
-                    and (p.deleted or st in ("done", "abandoned")))
+                    and not live_worker and (p.deleted or st in ("done", "abandoned")))
         out.append(Finding(p, item, tuple(why), reapable))
     return out
 
@@ -161,6 +195,11 @@ def scan(proc_root: str = "/proc") -> list[Proc] | None:
     root = Path(proc_root)
     if not root.is_dir():
         return None
+    try:
+        uptime = float((root / "uptime").read_text().split()[0])
+        ticks = os.sysconf("SC_CLK_TCK")
+    except (OSError, ValueError, IndexError):
+        return None
     raw = {}
     for d in root.iterdir():
         if not d.name.isdigit():
@@ -179,7 +218,8 @@ def scan(proc_root: str = "/proc") -> list[Proc] | None:
                                 head.partition("(")[2])
         except (IndexError, ValueError):
             continue
-    return [Proc(pid, ppid, cwd, cpu, start, cmd, raw.get(ppid, (0, "", 0, 0, "", ""))[5])
+    return [Proc(pid, ppid, cwd, cpu, start, cmd, raw.get(ppid, (0, "", 0, 0, "", ""))[5],
+                 max(0.0, (uptime - start / ticks) / 60))
             for pid, (ppid, cwd, cpu, start, cmd, _comm) in raw.items()]
 
 

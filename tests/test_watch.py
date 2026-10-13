@@ -159,6 +159,77 @@ def test_admission_refusal_holds_launches_and_explains(tmp_path, monkeypatch):
     assert any("launches wait, the box is busy: cpu: tasks waited 70%" in a for a in t.attention)
 
 
+def test_busy_box_is_one_episode_despite_clearings_and_reason_changes(tmp_path):
+    d = _setup(tmp_path, autolaunch=False, items=1)
+    Path(os.environ["ZAMU_CONFIG"]).write_text('admission = ["headroom"]\n')
+    c, ran = FakeCoord(), []
+    clock = [T0]
+    result = [(75, "not now: cpu: tasks waited 41%", "")]
+
+    def world():
+        w = _world(c, ran)()
+        w.now = lambda: clock[0]
+        inner = w.run
+        w.run = lambda argv: result[0] if argv[0] == "headroom" else inner(argv)
+        return w
+
+    assert len(watch.tick(d, config.load(), world, False).attention) == 1
+    result[0] = (75, "not now: memory stalled 2%", "")
+    assert watch.tick(d, config.load(), world, False).attention == []
+    result[0] = (75, "not now: cpu: tasks waited 43%", "")
+    assert watch.tick(d, config.load(), world, False).attention == []
+    clock[0] += dt.timedelta(hours=1)
+    assert len(watch.tick(d, config.load(), world, False).attention) == 1
+    result[0] = (0, "admit", "")
+    assert watch.tick(d, config.load(), world, False).attention == []
+    result[0] = (75, "not now: memory stalled 3%", "")
+    assert len(watch.tick(d, config.load(), world, False).attention) == 1
+
+
+def test_busy_box_is_not_news_without_a_free_slot(tmp_path, monkeypatch):
+    monkeypatch.setenv("ZAMU_MAX_WORKERS", "1")
+    d = _setup(tmp_path, autolaunch=False, items=2)
+    plan = watch.load(d / "plan.toml", "p")
+    engine.adopt(plan, d, engine.World(now=lambda: T0), "i0", "s1", "%1", "", "")
+    Path(os.environ["ZAMU_CONFIG"]).write_text('admission = ["headroom"]\n')
+    c, ran, checks = FakeCoord(), [], []
+
+    def world():
+        w = _world(c, ran)()
+        inner = w.run
+        def run(argv):
+            if argv[0] == "headroom":
+                checks.append(1)
+                return 75, "not now: cpu", ""
+            return inner(argv)
+        w.run = run
+        return w
+
+    assert watch.tick(d, config.load(), world, False).attention == []
+    assert checks == []
+
+
+def test_a_late_busy_read_does_not_wake_the_pm_as_a_launch_error(tmp_path):
+    d = _setup(tmp_path, items=1)
+    Path(os.environ["ZAMU_CONFIG"]).write_text('admission = ["headroom"]\n')
+    c, ran, reads = FakeCoord(), [], []
+
+    def world():
+        w = _world(c, ran)()
+        inner = w.run
+        def run(argv):
+            if argv[0] == "headroom":
+                reads.append(1)
+                return (75, "not now: cpu", "") if len(reads) % 3 == 0 else (0, "yes", "")
+            return inner(argv)
+        w.run = run
+        return w
+
+    first = watch.tick(d, config.load(), world, False)
+    assert not first.news
+    assert c.msgs == []
+
+
 def test_admission_admits_one_launch_per_tick(tmp_path, monkeypatch):
     d = _setup(tmp_path)
     Path(os.environ["ZAMU_CONFIG"]).write_text('admission = "headroom check"\n')

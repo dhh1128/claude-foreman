@@ -15,16 +15,16 @@ TREES = {WT: ("a", "running"), "/r/.worktrees/b": ("b", "done")}
 
 
 def P(pid, cwd, ppid=500, cpu=10, parent="bash", cmd="pytest"):
-    return Proc(pid, ppid, cwd, cpu, 1000 + pid, cmd, parent)
+    return Proc(pid, ppid, cwd, cpu, 1000 + pid, cmd, parent, 60)
 
 
 def test_orphans_in_a_worktree_are_found_and_idleness_is_noted():
     ps = [P(1, WT + "/tests", ppid=1, parent=""), P(2, WT, parent="claude"),
           P(3, WT, ppid=42, parent="systemd"), P(4, "/elsewhere", ppid=1)]
-    prev = {"3:1003": {"cpu": 10, "since": 0.0}}
+    prev = {p.key: {"cpu": p.cpu, "since": 0.0} for p in ps}
     f = {x.proc.pid: x for x in procs.analyse(ps, TREES, prev, now=3600.0, idle_minutes=30)}
     assert set(f) == {1, 3}
-    assert f[1].why == ("orphaned",) and f[1].item == "a"
+    assert f[1].why == ("orphaned", "idle 60m") and f[1].item == "a"
     assert f[3].why == ("orphaned", "idle 60m")
     assert not f[1].reapable  # a live worker may still be waiting on it
 
@@ -35,17 +35,36 @@ def test_a_quiet_process_that_is_not_orphaned_is_not_a_finding():
     assert procs.analyse([P(2, WT, parent="claude")], TREES, prev, 99999.0, 30) == []
 
 
+def test_recent_or_active_orphan_and_claude_background_shell_are_ignored():
+    old = P(10, WT, ppid=1, cpu=10)
+    recent = P(11, WT, ppid=1, cpu=10)
+    shell = P(12, WT, ppid=1, cpu=10,
+              cmd="bash -c source ~/.claude/shell-snapshots/snapshot-bash-123")
+    absolute_shell = P(13, WT, ppid=1, cpu=10,
+                       cmd="bash -c source /home/me/.claude/shell-snapshots/snapshot-bash-456")
+    prior = {p.key: {"cpu": 10, "since": 0.0} for p in (old, recent, shell, absolute_shell)}
+    aged = [procs.Proc(p.pid, p.ppid, p.cwd, p.cpu, p.start, p.cmd, p.parent_cmd,
+                       60 if p.pid != 11 else 17) for p in (old, recent, shell, absolute_shell)]
+    assert [f.proc.pid for f in procs.analyse(aged, TREES, prior, 3600, 30,
+                                              protected=set())] == [10]
+    moved = procs.Proc(10, 1, WT, 11, old.start, old.cmd, old.parent_cmd, 60)
+    assert procs.analyse([moved], TREES, prior, 3600, 30) == []
+
+
 def test_deleted_worktrees_are_reapable_even_when_no_plan_owns_them():
     ps = [P(5, "/x/.worktrees/gone (deleted)", ppid=1), P(6, "/tmp/gone (deleted)", ppid=1)]
-    (f,) = procs.analyse(ps, TREES, {}, 0.0, 30, protected=set())
+    prev = {p.key: {"cpu": p.cpu, "since": 0.0} for p in ps}
+    (f,) = procs.analyse(ps, TREES, prev, 3600.0, 30, protected=set())
     assert f.proc.pid == 5 and f.item == "" and f.reapable
-    (f,) = procs.analyse(ps, TREES, {}, 0.0, 30)  # panes unknown: nothing is reapable
+    (f,) = procs.analyse(ps, TREES, prev, 3600.0, 30)  # panes unknown: nothing is reapable
     assert not f.reapable
-    assert f.why == ("its directory was deleted",)
+    assert f.why == ("its directory was deleted", "idle 60m")
 
 
 def test_orphans_of_a_finished_item_are_reapable():
-    (f,) = procs.analyse([P(7, "/r/.worktrees/b", ppid=1)], TREES, {}, 0.0, 30, protected=set())
+    p = P(7, "/r/.worktrees/b", ppid=1)
+    (f,) = procs.analyse([p], TREES, {p.key: {"cpu": p.cpu, "since": 0.0}},
+                         3600.0, 30, protected=set())
     assert f.item == "b" and f.reapable
 
 
@@ -71,7 +90,8 @@ def test_scan_sees_a_real_orphan_and_its_deleted_directory(tmp_path):
     os.rmdir(wt)
     (p,) = [p for p in procs.scan() if p.pid == mine[0].pid]
     assert p.deleted and p.path == str(wt)
-    (f,) = [f for f in procs.analyse([p], {}, {}, 0.0, 30, protected=set())]
+    (f,) = procs.analyse([p], {}, {p.key: {"cpu": p.cpu, "since": 0.0}},
+                         1.0, 0, protected=set())
     assert f.reapable
     assert procs.kill(p, grace=2.0) in (f"{p.pid} terminated", f"{p.pid} killed")
     assert p.pid not in {q.pid for q in procs.scan()}

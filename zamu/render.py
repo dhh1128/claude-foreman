@@ -122,7 +122,8 @@ def summary(plan: Plan, doc: dict[str, Any], cfg: Config, now: dt.datetime) -> d
                           f"{_ago(r.get('last_report', ''), now)}: \"{_short(r.get('last_line', ''), 60)}\"")
     launch = graph.launchable(plan, sts)
     idle = [f"{wid} ({w.get('engine', '?')})" for wid, w in doc.get("workers", {}).items()
-            if w.get("worker") != "dead"
+            if w.get("worker") not in ("dead", "retired")
+            and (not (w.get("pane") or w.get("session")) or w.get("worker") == "live")
             and not any(sts.get(i) in graph.ACTIVE for i in w.get("items", []))]
     waiting = []
     for iid, it in plan.items.items():

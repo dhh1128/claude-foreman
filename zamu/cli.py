@@ -172,6 +172,7 @@ def cmd_check(args) -> int:
 def cmd_board(args) -> int:
     plan, d = _load(args)
     cfg = config.load()
+    engine.refresh_idle_workers(plan, d, world())
     doc = store.read(d)
     now = engine.utcnow()
     if args.json:
@@ -234,6 +235,12 @@ def cmd_worker(args) -> int:
         print(engine.worker_add(d, world(), args.wid, args.engine, args.session or "",
                                 args.pane or "", wt, args.note or ""))
         return 0
+    if args.action == "retire":
+        if not args.wid:
+            raise ConfigError("`worker retire` needs an id.")
+        print(engine.worker_retire(plan, d, world(), args.wid))
+        return 0
+    engine.refresh_idle_workers(plan, d, world())
     doc = store.read(d)
     ws = doc.get("workers", {})
     if not ws:
@@ -485,7 +492,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(func=cmd_show)
     s = sub.add_parser("worker", help="register an agent someone else started, or list workers")
     plan_arg(s)
-    s.add_argument("action", choices=["add", "list"])
+    s.add_argument("action", choices=["add", "list", "retire"])
     s.add_argument("wid", nargs="?")
     s.add_argument("--engine", default="claude", help="claude, codex, subagent, ...")
     s.add_argument("--session", help="a claude session id, for liveness via session-coord")

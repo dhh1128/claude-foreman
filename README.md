@@ -93,6 +93,8 @@ zamu launch --ready --go    create worktrees, open tmux windows, start workers
 zamu launch --relaunch <id> --go   resume a dead worker's conversation
 zamu adopt <id> --session <sid>   take on a worker started by hand
 zamu worker add <wid> --engine codex|subagent|claude [--pane] [--session]
+zamu worker list              show registered workers and their last checked status
+zamu worker retire <wid>      close an idle worker and remove its clean worktree; keep its branch
 zamu assign <id> <wid>      give an item to a registered worker; prints its brief
 zamu verify <id> [--ok EVIDENCE | --fail WHY]   after a pin moved
 zamu rules [--add TEXT --source ASK]   the plan's standing rules

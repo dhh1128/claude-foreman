@@ -13,6 +13,7 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import os
+import subprocess
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable
@@ -233,6 +234,8 @@ def pulse(plan: Plan, plan_dir: Path, cfg: Config, world: World,
         except Exception:  # noqa: BLE001 -- any failure to run is "could not look"
             pin_values[name] = None
 
+    idle_proofs = _idle_worker_proofs(plan, snap, world, now)
+
     changes: list[str] = []
     messages: list[tuple[str, str]] = []
     with store.transaction(plan_dir) as doc:
@@ -302,6 +305,8 @@ def pulse(plan: Plan, plan_dir: Path, cfg: Config, world: World,
             if rec.get("wid") in doc.get("workers", {}):
                 doc["workers"][rec["wid"]]["worker"] = worker
 
+        _check_idle_workers(plan, plan_dir, doc, idle_proofs, now)
+
         changes += _pins(plan, plan_dir, doc, pin_values, now)
         _ready_since(plan, doc, graph.states(plan, doc), now)
         if cfg.escalate == "session-coord":
@@ -354,6 +359,52 @@ def _liveness(rec: dict[str, Any], live: set[str] | None, world: World, now: dt.
     if launched and now - launched < grace:
         return "starting"
     return "dead"
+
+
+def _idle_worker_status(plan: Plan, w: dict[str, Any], world: World,
+                        now: dt.datetime) -> str:
+    """Ask the same liveness authorities for a worker after its last item has finished."""
+    if w.get("worker") == "retired":
+        return "retired"
+    repo = next((plan.items[i].repo for i in w.get("items", []) if i in plan.items), "")
+    live = world.coord.live_sessions(repo) if w.get("session") and repo else None
+    return _liveness(w, live, world, now, dt.timedelta(0))
+
+
+def _worker_identity(w: dict[str, Any]) -> tuple:
+    return (w.get("session"), w.get("pane"), w.get("token"), w.get("ours"),
+            tuple(w.get("items", [])))
+
+
+def _idle_worker_proofs(plan: Plan, doc: dict[str, Any], world: World,
+                        now: dt.datetime) -> dict[str, tuple[tuple, str]]:
+    return {wid: (_worker_identity(w), _idle_worker_status(plan, w, world, now))
+            for wid, w in doc.get("workers", {}).items() if w.get("worker") != "retired"}
+
+
+def _check_idle_workers(plan: Plan, plan_dir: Path, doc: dict[str, Any],
+                        proofs: dict[str, tuple[tuple, str]], now: dt.datetime) -> None:
+    sts = graph.states(plan, doc)
+    for wid, w in doc.get("workers", {}).items():
+        if any(sts.get(i) in graph.ACTIVE for i in w.get("items", [])):
+            continue
+        proof = proofs.get(wid)
+        if proof is None or proof[0] != _worker_identity(w):
+            continue
+        status = proof[1]
+        if status == "unknown" and w.get("worker") == "dead":
+            continue  # an unreadable probe is not evidence that a dead worker returned
+        if status != w.get("worker"):
+            w["worker"] = status
+            _event(plan_dir, now, "", "worker", wid=wid, worker=status)
+
+
+def refresh_idle_workers(plan: Plan, plan_dir: Path, world: World) -> None:
+    """Refresh the registry before a read-only board or worker listing offers reuse."""
+    now = world.now()
+    proofs = _idle_worker_proofs(plan, store.read(plan_dir), world, now)
+    with store.transaction(plan_dir) as doc:
+        _check_idle_workers(plan, plan_dir, doc, proofs, now)
 
 
 def _ripple(plan: Plan, doc: dict[str, Any], iid: str) -> str:
@@ -787,12 +838,69 @@ def worker_add(plan_dir: Path, world: World, wid: str, engine: str, session: str
     if not wid or not wid.replace("-", "").replace("_", "").replace(".", "").isalnum():
         raise EngineError(f"worker id {wid!r}: use letters, digits, '-', '_' and '.'.")
     with store.transaction(plan_dir) as doc:
+        existing = doc.get("workers", {}).get(wid)
+        if existing and existing.get("worker") == "retired":
+            raise EngineError(f"worker {wid} is retired; register a new worker id.")
         _register_worker(doc, wid, engine, session, pane, worktree, note=note)
         _event(plan_dir, world.now(), "", "worker-add", wid=wid, engine=engine, session=session,
                pane=pane, worktree=worktree)
     proofs = ("session-coord's board" if session else "") + (" and " if session and pane else "") \
         + ("its pane" if pane else "")
     return f"worker {wid} ({engine}) registered; liveness from {proofs or 'reports only'}"
+
+
+def worker_retire(plan: Plan, plan_dir: Path, world: World, wid: str) -> str:
+    """Close an idle worker's pane and clean linked worktree, keeping its branch and record."""
+    def run(argv: list[str]) -> tuple[int, str, str]:
+        try:
+            return world.run(argv)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            raise EngineError(f"could not run {' '.join(argv[:2])} while retiring {wid}: {e}") from None
+
+    tree_removed = False
+    with store.transaction(plan_dir) as doc:
+        w = doc.get("workers", {}).get(wid)
+        if w is None:
+            raise EngineError(f"no worker {wid!r} in plan {plan.name!r}.")
+        if w.get("worker") == "retired":
+            raise EngineError(f"worker {wid} is already retired.")
+        sts = graph.states(plan, doc)
+        active = [i for i in w.get("items", []) if sts.get(i) in graph.ACTIVE]
+        if active:
+            raise EngineError(f"worker {wid} has active item(s) {', '.join(active)}; finish them first.")
+        tree = w.get("worktree", "")
+        repo = next((plan.items[i].repo for i in w.get("items", []) if i in plan.items), "")
+        if tree and Path(tree).exists():
+            if any(other != wid and Path(rec.get("worktree", "")).resolve() == Path(tree).resolve()
+                   for other, rec in doc.get("workers", {}).items()
+                   if rec.get("worktree") and rec.get("worker") != "retired"):
+                raise EngineError(f"worker {wid}'s worktree is shared with another worker.")
+            rc, out, err = run(["git", "-C", tree, "worktree", "list", "--porcelain"])
+            if rc != 0 or f"worktree {Path(tree).resolve()}\n" not in out:
+                raise EngineError(f"worker {wid}'s tree is not a linked git worktree: {err.strip()}")
+            main = out.splitlines()[0].removeprefix("worktree ")
+            if Path(tree).resolve() == Path(main).resolve() or (repo and Path(tree).resolve() == Path(repo).resolve()):
+                raise EngineError(f"worker {wid}'s worktree is the main checkout; cannot remove it.")
+            rc, out, err = run(["git", "-C", tree, "status", "--porcelain", "--untracked-files=all"])
+            if rc != 0:
+                raise EngineError(f"cannot inspect worker {wid}'s tree: {err.strip()}")
+            if out.strip():
+                raise EngineError(f"worker {wid}'s worktree is dirty; commit or clean it before retiring.")
+        pane = w.get("pane", "")
+        if pane:
+            rc, out, err = run(["tmux", "kill-window", "-t", pane])
+            if rc != 0 and _idle_worker_status(plan, w, world, world.now()) != "dead":
+                raise EngineError(f"could not close worker {wid}'s window: {(err or out).strip()}")
+        if tree and Path(tree).exists():
+            rc, out, err = run(["git", "-C", main, "worktree", "remove", tree])
+            if rc != 0:
+                raise EngineError(f"could not remove worker {wid}'s worktree: {(err or out).strip()}")
+            tree_removed = True
+        w["worker"] = "retired"
+        w["retired_at"] = _iso(world.now())
+        _event(plan_dir, world.now(), "", "worker-retire", wid=wid, pane=pane, worktree=tree)
+    actions = (["window closed"] if pane else []) + (["clean worktree removed"] if tree_removed else [])
+    return f"worker {wid} retired; {', '.join(actions) if actions else 'registry closed'}; branch kept"
 
 
 def assign(plan: Plan, plan_dir: Path, world: World, iid: str, wid: str, note: str = "") -> str:
@@ -808,6 +916,10 @@ def assign(plan: Plan, plan_dir: Path, world: World, iid: str, wid: str, note: s
         w = doc.get("workers", {}).get(wid)
         if w is None:
             raise EngineError(f"no worker {wid!r}; register it with `zamu worker add`.")
+        status = _idle_worker_status(plan, w, world, now)
+        if status in ("dead", "retired") or (status == "unknown" and
+                                             w.get("worker") == "dead"):
+            raise EngineError(f"worker {wid} is {status}; register or launch a live worker instead.")
         sts = graph.states(plan, doc)
         rec = _rec(doc, iid)
         if sts[iid] in graph.FINAL:

@@ -67,12 +67,12 @@ def test_the_pane_proves_nothing_for_a_worker_zamu_did_not_launch(setup):
 def test_a_codex_window_is_judged_by_its_pane(tmp_path):
     plan = parse('[items.a]\ntitle="A"\nkind="build"\nrepo="/r"\noracle="manual"\n',
                  tmp_path / "plan.toml")
-    w0 = engine.World(now=lambda: T0, pane_has_session=lambda pane, token: True)
+    w0 = engine.World(now=lambda: T0, pane_exists=lambda pane: True)
     engine.worker_add(tmp_path, w0, "cx1", "codex", pane="%44", worktree="/r")
     engine.assign(plan, tmp_path, w0, "a", "cx1")
     for alive, want in ((True, "live"), (False, "dead")):
         w = engine.World(coord=FakeCoord(None), now=lambda: T0 + dt.timedelta(hours=1),
-                         pane_has_session=lambda p, s, a=alive: a)
+                         pane_exists=lambda p, a=alive: a)
         engine.pulse(plan, tmp_path, Config(), w)
         assert store.read(tmp_path)["items"]["a"]["worker"] == want
 

@@ -71,17 +71,24 @@ def _tmux_session() -> str:
         return ""
 
 
-def _pane_has_session(pane: str, sid: str) -> bool | None:
-    """Does any process in `pane` carry `sid` in its argv? None when it cannot be told."""
+def _pane_exists(pane: str) -> bool | None:
+    """Whether tmux lists this pane, or None when tmux could not be asked."""
     try:
         panes = subprocess.run(["tmux", "list-panes", "-a", "-F", "#{pane_id}"],
                                capture_output=True, text=True, timeout=5)
-        if panes.returncode != 0:
-            return None
-        if pane not in panes.stdout.splitlines():
-            return False
-        if not sid:
-            return True
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return pane in panes.stdout.splitlines() if panes.returncode == 0 else None
+
+
+def _pane_has_session(pane: str, sid: str) -> bool | None:
+    """Does a process in this pane carry `sid`? A present pane without an id proves no owner."""
+    exists = _pane_exists(pane)
+    if exists is not True:
+        return exists
+    if not sid:
+        return None
+    try:
         r = subprocess.run(["tmux", "display-message", "-p", "-t", pane, "#{pane_pid}"],
                            capture_output=True, text=True, timeout=5)
         if r.returncode != 0:
@@ -137,7 +144,8 @@ def _pane_pids() -> list[int] | None:
 
 def world() -> engine.World:
     from . import procs
-    return engine.World(tmux_session=_tmux_session, pane_has_session=_pane_has_session,
+    return engine.World(tmux_session=_tmux_session, pane_exists=_pane_exists,
+                        pane_has_session=_pane_has_session,
                         scan=procs.scan, pane_activity=_pane_activity, pane_pids=_pane_pids)
 
 

@@ -44,6 +44,8 @@ class World:
     tmux_session: Callable[[], str] = lambda: ""
     cwd: Callable[[], str] = lambda: str(Path.cwd())
     pane: Callable[[], str] = lambda: os.environ.get("TMUX_PANE", "")
+    #: Whether a pane id exists, or None when tmux could not be asked. Existence is not ownership.
+    pane_exists: Callable[[str], "bool | None"] = lambda pane: None
     #: (pane, session id) -> True if a process in that pane carries the session id in its argv,
     #: False if not, None if tmux or the process table could not be read.
     pane_has_session: Callable[[str, str], "bool | None"] = lambda pane, sid: None
@@ -350,7 +352,7 @@ def _liveness(rec: dict[str, Any], live: set[str] | None, world: World, now: dt.
         # claude were marked gone when this case was left out.)
         in_pane = True if world.pane_has_session(pane, sid) else None
     else:
-        in_pane = world.pane_has_session(pane, "")  # a window with no id: does the pane exist?
+        in_pane = world.pane_exists(pane)  # presence proves liveness, not ownership
     if (sid and live is not None and sid in live) or in_pane:
         return "live"
     if in_pane is None and (not sid or live is None):
@@ -896,7 +898,7 @@ def worker_retire(plan: Plan, plan_dir: Path, world: World, wid: str) -> str:
                 if rc != 0:
                     raise EngineError(f"could not close worker {wid}'s window: {(err or out).strip()}")
                 window_closed = True
-            elif world.pane_has_session(pane, "") is not False:
+            elif world.pane_exists(pane) is not False:
                 raise EngineError(f"cannot prove pane {pane} still belongs to worker {wid}; "
                                   "close it manually before retiring.")
         if tree and Path(tree).exists():

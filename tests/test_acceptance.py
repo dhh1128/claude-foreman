@@ -193,6 +193,7 @@ def test_3b_go_creates_the_worktree_opens_the_window_and_records_the_worker(w):
     branch = subprocess.run(["git", "-C", str(wt), "branch", "--show-current"],
                             capture_output=True, text=True).stdout.strip()
     assert branch == "app-decisions"
+    assert (wt / ".zamu" / ".gitignore").read_text() == "*\n"
     (call,) = w.calls("tmux")
     sid = call[call.index("--session-id") + 1]
     assert "launched app-decisions in pane %100" in out
@@ -360,7 +361,7 @@ def test_dead_worker_is_detected_from_session_coord_and_can_be_relaunched(w):
     out = w.zamu("launch", "--relaunch", "app-decisions", "--go", env={"TMUX": ""}).stdout
     call = w.calls("tmux")[-1]
     assert call[call.index("--resume") + 1] == sid
-    assert "git" not in out.split("# launched")[0].split("\n", 1)[1]  # worktree reused
+    assert "git -C" not in out.split("# launched")[0].split("\n", 1)[1]  # worktree reused
 
 
 def test_a_relaunch_of_a_live_worker_is_refused(w):

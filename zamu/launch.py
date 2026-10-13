@@ -63,7 +63,9 @@ def worker_prompt(plan: Plan, it: Item, worktree: str, resume: bool) -> str:
         f"line>\"` at each milestone, `{rep} review \"<PR url>\"` once your PR is open, `{rep} "
         f"done \"<one line>\"` when you believe the work is finished, `{rep} waiting \"<what the "
         f"user must decide, with any ask ids>\"` when you pause for the user's approval, and `{rep} stuck \"<what "
-        f"you need>\"` if you cannot proceed. zamu checks the exit condition itself and "
+        f"you need>\"` if you cannot proceed. If the command fails, append a line to "
+        f"{worktree}/.zamu/reports instead: `<ISO time> <state> <one line>`, using the same "
+        f"states. End every report line with a newline. zamu checks the exit condition itself and "
         f"does not take your word for it: {oracle}. Merging, review, and anything needing the "
         f"user follow your normal rules; zamu will not do them for you. You were started "
         f"in a background window that nobody is watching, so do not stop to ask the user "
@@ -99,6 +101,10 @@ def plan_launch(plan: Plan, it: Item, *, tmux_session: str, claude: Sequence[str
         else:
             steps.append(Step(("git", "-C", repo, "worktree", "add", wt, "-b", it.topic,
                                f"origin/{base}"), f"new branch {it.topic} from origin/{base}"))
+    steps.append(Step(("mkdir", "-p", f"{wt}/.zamu"), "prepare private worker reports"))
+    steps.append(Step(("sh", "-c", 'test -e "$1" || printf "*\\n" > "$1"',
+                       "zamu-ignore", f"{wt}/.zamu/.gitignore"),
+                      "keep worker reports out of git"))
     target = f"{tmux_session}:" if tmux_session else ""
     if engine == "claude":
         cmd = list(claude) + (["--resume", sid] if resume else ["--session-id", sid])

@@ -105,7 +105,11 @@ The summit build, with a hard date five weeks out, was offered zamu on 2026-10-1
 - **Trusting a worker's "done".** See above.
 - **Its own merge lock, its own liveness, its own message channel.** session-coord has all three.
 
+**Worktree report files.** A confined worker can append `<ISO time> <state> <line>` to `.zamu/reports`; pulse reads complete newline terminated records for active items only. It stores each file's byte offset in the same atomic `state.json` write as the report effects, so a crash before that write replays the whole line and a crash after it skips the line. The alternative was to move or truncate consumed lines, but that makes a crash between moving the file and updating state lose reports, and requires a sandboxed worker to cooperate with state outside its worktree. The normal command and file path use the same report state transition. Malformed lines advance the offset but remain visible as attention entries with the path and byte position. An absent file is empty; an unreadable or shortened file is attention. The launcher creates `.zamu/.gitignore` containing `*` before starting the worker.
+
 ## Known gaps — what has not been verified
+
+**Known gap for file report audit:** `events.jsonl` is appended while `state.json` is still in its transaction, as with command reports. A process crash after the event append but before the atomic state write can leave a duplicate event when the file line is replayed. The report state, offset, and PM message remain safe; the event log's existing write order is not a cross-file transaction.
 
 Reported by the first real PM and not yet built:
 

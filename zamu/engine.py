@@ -126,6 +126,41 @@ def _needs_oracle(it: Item, st: str) -> bool:
     return st not in graph.FINAL and bool(it.oracle) and not oracles.is_manual(it.oracle)
 
 
+def _report_lines(path: Path, offset: int) -> list[tuple[int, str]] | None:
+    """Return complete lines and byte offsets; None when the saved stream cannot be read."""
+    try:
+        with path.open("rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            if offset > size:
+                return None
+            f.seek(offset)
+            data = f.read()
+    except FileNotFoundError:
+        return None if offset else []
+    except OSError:
+        return None
+    out = []
+    pos = offset
+    for raw in data.split(b"\n")[:-1]:
+        pos += len(raw) + 1
+        try:
+            out.append((pos, raw.removesuffix(b"\r").decode("utf-8")))
+        except UnicodeDecodeError:
+            out.append((pos, ""))
+    return out
+
+
+def _parse_report_line(raw: str) -> tuple[dt.datetime, str, str] | None:
+    parts = raw.split(" ", 2)
+    if len(parts) != 3 or parts[1] not in REPORT_STATES or not parts[2].strip():
+        return None
+    when = _parse(parts[0])
+    if when is None or when.tzinfo is None:
+        return None
+    return when, parts[1], parts[2]
+
+
 def pulse(plan: Plan, plan_dir: Path, cfg: Config, world: World,
           oracles_due: bool = True) -> dict[str, Any]:
     """Check oracles and workers, file escalations, and return what changed.
@@ -137,6 +172,26 @@ def pulse(plan: Plan, plan_dir: Path, cfg: Config, world: World,
     now = world.now()
     snap = store.read(plan_dir)
     sts = graph.states(plan, snap)
+
+    file_reports: dict[str, tuple[str, str, int, list[tuple[int, str, tuple | None, oracles.Verdict | None]], str]] = {}
+    for iid, it in plan.items.items():
+        rec = snap["items"].get(iid, {})
+        if sts[iid] not in graph.ACTIVE or not rec.get("worktree"):
+            continue
+        path = Path(rec["worktree"]) / ".zamu" / "reports"
+        path_str = str(path)
+        offset = rec.get("report_offset", 0) if rec.get("report_path", path_str) == path_str else 0
+        lines = _report_lines(path, offset)
+        error = f"{path}: cannot read reports from byte {offset}; inspect the file" if lines is None else ""
+        pending = []
+        for end, raw in lines or []:
+            parsed = _parse_report_line(raw)
+            verdict = None
+            if parsed and parsed[1] == "done" and it.oracle and not oracles.is_manual(it.oracle):
+                cwd = it.repo if it.repo and Path(it.repo).is_dir() else str(plan_dir)
+                verdict = oracles.check(it.oracle, cwd, world.oracle_run)
+            pending.append((end, raw, parsed, verdict))
+        file_reports[iid] = rec["worktree"], path_str, offset, pending, error
 
     verdicts: dict[str, oracles.Verdict] = {}
     for iid, it in plan.items.items():
@@ -160,7 +215,34 @@ def pulse(plan: Plan, plan_dir: Path, cfg: Config, world: World,
             pin_values[name] = None
 
     changes: list[str] = []
+    messages: list[tuple[str, str]] = []
     with store.transaction(plan_dir) as doc:
+        for iid, (worktree, path, start, pending, error) in file_reports.items():
+            rec = _rec(doc, iid)
+            if (graph.states(plan, doc)[iid] not in graph.ACTIVE or
+                    rec.get("worktree") != worktree or
+                    (rec.get("report_offset", 0) if rec.get("report_path", path) == path else 0) != start):
+                continue
+            if rec.get("report_path") != path:
+                rec["report_path"] = path
+                rec["report_offset"] = 0
+                rec.pop("report_file_errors", None)
+            if error:
+                rec.setdefault("report_file_errors", [])
+                if error not in rec["report_file_errors"]:
+                    rec["report_file_errors"].append(error)
+            for end, raw, parsed, verdict in pending:
+                if parsed is None:
+                    reason = f"{path}: malformed report at byte {rec['report_offset']}: {raw[:100]!r}"
+                    rec.setdefault("report_file_errors", []).append(reason)
+                    _event(plan_dir, now, iid, "report_file_error", detail=reason)
+                else:
+                    when, state, line = parsed
+                    outcome = _apply_report(plan, plan_dir, doc, iid, state, line, when, verdict)
+                    changes.append(outcome)
+                    if state in ("review", "done") + FLAGS:
+                        messages.append((outcome, line))
+                rec["report_offset"] = end
         for iid, v in verdicts.items():
             rec = _rec(doc, iid)
             prev = rec.get("oracle", {}).get("ok")
@@ -201,6 +283,9 @@ def pulse(plan: Plan, plan_dir: Path, cfg: Config, world: World,
         else:
             doc.pop("admission", None)
         changes += _leftovers(plan, doc, graph.states(plan, doc), cfg, world, now)
+        pm = dict(doc.get("pm", {}))
+    for outcome, line in messages:
+        _message_pm(pm, world, plan.name, outcome, line)
     return {"changes": changes}
 
 
@@ -722,6 +807,53 @@ def adopt(plan: Plan, plan_dir: Path, world: World, iid: str, session: str, pane
 
 # --- report, mark, attach -----------------------------------------------------------------
 
+def _apply_report(plan: Plan, plan_dir: Path, doc: dict[str, Any], iid: str, state: str,
+                  line: str, now: dt.datetime, verdict: oracles.Verdict | None,
+                  evidence: str = "") -> str:
+    """Apply a command or file report while the plan transaction is held."""
+    it = plan.items[iid]
+    rec = _rec(doc, iid)
+    if rec.get("state") in graph.FINAL or it.pinned:
+        outcome = f"{iid} is already {it.pinned or rec['state']}; report recorded only"
+    elif state in FLAGS:
+        rec[state] = line
+        outcome = f"{iid} flagged {state}"
+    elif state == "done":
+        if verdict is not None and verdict.ok is True:
+            rec["state"] = "done"
+            _clear_flags(rec)
+            rec.pop("reopened", None)
+            rec.pop("stale", None)
+            outcome = f"{iid} done; oracle agrees ({verdict.detail})" + _ripple(plan, doc, iid)
+        else:
+            rec["state"] = "review"
+            rec["claimed_done"] = True
+            why = verdict.detail if verdict else "its oracle is manual"
+            outcome = f"{iid} claimed done, held in review: {why}"
+        if verdict is not None:
+            rec["oracle"] = {"ok": verdict.ok, "detail": verdict.detail, "checked": _iso(now)}
+    else:
+        rec["state"] = state
+        _clear_flags(rec)
+        outcome = f"{iid} {state}"
+    rec["last_report"] = _iso(now)
+    rec["last_line"] = line
+    if evidence:
+        _add_evidence(doc, rec, evidence, "worker report", now)
+    _event(plan_dir, now, iid, "report", state=state, line=line, outcome=outcome,
+           **({"evidence": evidence} if evidence else {}))
+    return outcome
+
+
+def _message_pm(pm: dict[str, Any], world: World, plan_name: str,
+                outcome: str, line: str) -> None:
+    from_pm = bool(pm.get("pane")) and pm.get("pane") == world.pane()
+    if pm.get("repo") and pm.get("target") and not from_pm:
+        world.coord.msg(pm["repo"], pm["target"],
+                        f"zamu: {outcome}. Worker says: {line}. Run `zamu pulse --plan "
+                        f"{plan_name}`.")
+
+
 def report(plan: Plan, plan_dir: Path, world: World, iid: str, state: str, line: str,
            evidence: str = "") -> str:
     """A worker's word. `done` is checked against the oracle and is not believed alone."""
@@ -736,42 +868,10 @@ def report(plan: Plan, plan_dir: Path, world: World, iid: str, state: str, line:
         cwd = it.repo if it.repo and Path(it.repo).is_dir() else str(plan_dir)
         verdict = oracles.check(it.oracle, cwd, world.oracle_run)
     with store.transaction(plan_dir) as doc:
-        rec = _rec(doc, iid)
-        if rec.get("state") in graph.FINAL or it.pinned:
-            outcome = f"{iid} is already {it.pinned or rec['state']}; report recorded only"
-        elif state in FLAGS:
-            rec[state] = line
-            outcome = f"{iid} flagged {state}"
-        elif state == "done":
-            if verdict is not None and verdict.ok is True:
-                rec["state"] = "done"
-                _clear_flags(rec)
-                rec.pop("reopened", None)
-                rec.pop("stale", None)
-                outcome = f"{iid} done; oracle agrees ({verdict.detail})" + _ripple(plan, doc, iid)
-            else:
-                rec["state"] = "review"
-                rec["claimed_done"] = True
-                why = verdict.detail if verdict else "its oracle is manual"
-                outcome = f"{iid} claimed done, held in review: {why}"
-            if verdict is not None:
-                rec["oracle"] = {"ok": verdict.ok, "detail": verdict.detail, "checked": _iso(now)}
-        else:
-            rec["state"] = state
-            _clear_flags(rec)
-            outcome = f"{iid} {state}"
-        rec["last_report"] = _iso(now)
-        rec["last_line"] = line
-        if evidence:
-            _add_evidence(doc, rec, evidence, "worker report", now)
-        _event(plan_dir, now, iid, "report", state=state, line=line, outcome=outcome,
-               **({"evidence": evidence} if evidence else {}))
+        outcome = _apply_report(plan, plan_dir, doc, iid, state, line, now, verdict, evidence)
         pm = dict(doc.get("pm", {}))
-    from_pm = bool(pm.get("pane")) and pm.get("pane") == world.pane()
-    if state in ("review", "done") + FLAGS and pm.get("repo") and pm.get("target") and not from_pm:
-        world.coord.msg(pm["repo"], pm["target"],
-                        f"zamu: {outcome}. Worker says: {line}. Run `zamu pulse --plan "
-                        f"{plan.name}`.")
+    if state in ("review", "done") + FLAGS:
+        _message_pm(pm, world, plan.name, outcome, line)
     return outcome
 
 

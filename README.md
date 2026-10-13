@@ -108,6 +108,8 @@ zamu check | plans | addendum
 
 `~/.local/state/zamu/plans/<name>/`: `plan.toml` (yours), `state.json` and `events.jsonl` (zamu's). Override the root with `ZAMU_HOME`. Workers' worktrees are `<repo>/.worktrees/<topic>`.
 
+A worker confined to its worktree can append a newline terminated report to `<worktree>/.zamu/reports`: `<ISO time> <running|review|done|stuck|waiting> <one line>`. Each pulse reads complete new lines from active workers and handles them like `zamu report`. zamu creates `.zamu/.gitignore` when it launches a worktree.
+
 ## Configure
 
 `~/.config/zamu/config.toml`, every key optional:

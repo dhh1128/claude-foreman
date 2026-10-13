@@ -48,6 +48,8 @@ def summary(plan: Plan, doc: dict[str, Any], cfg: Config, now: dt.datetime) -> d
             attention.append(f"{iid}: claims done; oracle says {_short(r.get('oracle', {}).get('detail', 'manual'), 60)}")
         if r.get("ask_error"):
             attention.append(f"{iid}: decision not escalated: {_short(r['ask_error'], 60)}")
+        for error in r.get("report_file_errors", []):
+            attention.append(f"{iid}: {error}")
     for iid in plan.items:
         r = recs.get(iid, {})
         quiet = r.get("pane_activity")

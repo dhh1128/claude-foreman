@@ -136,13 +136,31 @@ def analyse(procs: Iterable[Proc], trees: Mapping[str, tuple[str, str]],
     nothing is reapable. `trees` maps worktrees to (item, state). `previous` remembers when
     CPU last moved. `identities` maps explicit worker ids to (plan, item, state).
     """
+    ps = list(procs)
+    by_pid = {p.pid: p for p in ps}
+    known = identities or {}
+
+    def worker_identity(p: Proc) -> tuple[str, str, str] | None:
+        """Use the closest known worker identity in this process's ancestry."""
+        seen = set()
+        while p.pid not in seen:
+            seen.add(p.pid)
+            identity = known.get(worker_id(p))
+            if identity:
+                return identity
+            parent = by_pid.get(p.ppid)
+            if parent is None:
+                break
+            p = parent
+        return None
+
     skip = set(own_pids)
     guard = set(protected) if protected is not None else None
     out = []
-    for p in procs:
+    for p in ps:
         if p.pid in skip or is_claude_background_shell(p):
             continue
-        identity = (identities or {}).get(worker_id(p))
+        identity = worker_identity(p)
         if identity and identity[0] != plan_name:
             continue
         owner = next(((item, st) for root, (item, st) in trees.items() if under(p.path, root)),

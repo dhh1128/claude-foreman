@@ -143,6 +143,18 @@ def test_transient_read_error_clears_after_a_successful_read(tmp_path, monkeypat
                    render.summary(plan, store.read(tmp_path), Config(), T0)["attention"])
 
 
+def test_read_error_does_not_raise_attention_after_item_finishes(tmp_path, monkeypatch):
+    plan, reports, world, _ = setup(tmp_path)
+    reports.write_text("2026-10-13T12:00:00+00:00 running progress\n")
+    monkeypatch.setattr(engine, "_report_lines", lambda *args: None)
+    pulse(plan, tmp_path, world)
+    assert any("cannot read reports" in a for a in
+               render.summary(plan, store.read(tmp_path), Config(), T0)["attention"])
+    engine.mark(plan, tmp_path, world, "a", "done", "finished through another channel")
+    assert not any("cannot read reports" in a for a in
+                   render.summary(plan, store.read(tmp_path), Config(), T0)["attention"])
+
+
 def test_malformed_line_is_attention_and_does_not_hide_later_reports(tmp_path):
     plan, reports, world, _ = setup(tmp_path)
     reports.write_text("not a report\n2026-10-13T12:00:00+00:00 waiting Daniel must decide\n")

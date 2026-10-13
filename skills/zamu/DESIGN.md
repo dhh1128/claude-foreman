@@ -135,11 +135,11 @@ The summit build, with a hard date five weeks out, was offered zamu on 2026-10-1
 
 ## Prompt-line provenance (2026-10-13)
 
-In a temporary real Claude Code tmux pane, `tmux capture-pane -e -p` showed an automatic suggestion after the input `❯` as `\x1b[2mTry "how does <filepath> work?"\x1b[0m` (dim). Text entered into that same prompt with `tmux send-keys` appeared as plain `zamu sgr probe typed`, with no bold SGR code. Existing panes also showed dim suggestions, but no bold input in their visible captures. Therefore the PM skill requires `-e` and permits attribution to Daniel only on positive bold (`SGR 1`) evidence; plain text remains of unknown provenance even when it might be his typing. Rejected: treating all text after `❯` as his input, or treating text without a dim code as his input, because both would repeat the reported false attribution. zamu code reads pane activity timestamps and process identity, not pane content, so the rule currently has no code path to apply to.
+In a temporary real Claude Code tmux pane, `tmux capture-pane -e -p` showed an automatic suggestion after the input `❯` as `\x1b[2mTry "how does <filepath> work?"\x1b[0m` (dim). Text entered into that same prompt with `tmux send-keys` appeared as plain `zamu sgr probe typed`, with no style SGR code. Existing panes also showed dim suggestions. Therefore the PM skill requires `-e`, calls dim text a suggestion, and calls plain text only "typed at the prompt" without assigning its author. Daniel's authorship requires his confirmation. Rejected: treating all text after `❯` as his input, because suggestions use the same prompt line; also rejected: requiring bold to recognize typed text, because the real typed probe was plain. zamu code reads pane activity timestamps and process identity, not pane content, so the rule currently has no code path to apply to.
 
 ## Known gaps — what has not been verified
 
-**The positive bold case remains unverified.** The real typed probe did not render bold in this Claude Code build and theme. A future build may use different styling; the rule deliberately withholds attribution until bold is actually observed.
+**Other input styling remains unverified.** The probe covered a dim suggestion and plain typed text in one Claude Code build and theme. Other styles or a capture without rendering codes are left unattributed.
 
 **Worker retirement has only been tested with real temporary git worktrees and fake tmux.** Closing a real worker window and removing its worktree have not been tried end to end on a running plan.
 

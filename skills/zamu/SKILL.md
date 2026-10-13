@@ -92,7 +92,7 @@ The cap on live workers comes from config; `zamu` refuses past it and ready item
 - **Merges queue in a repo.** Two items will land in one repo. Tell those workers to serialize with `session-coord lock merge`. zamu has no lock of its own, on purpose.
 - **Decision not escalated.** The ask could not be filed; the line says why. Fix that, or file it yourself.
 
-**Prompt-line provenance.** The `-e` flag preserves rendering codes that plain capture drops. On a Claude Code input line after `❯`, attribute text to Daniel only when the text itself is visibly bold (`SGR 1`); a selected menu option marked `❯` is not input. If the text is not bold or the rendering codes are missing, its provenance is unknown. Do not quote or paraphrase text of unknown provenance as Daniel's words: it may be an automatic suggestion. Inspect only the visible screen needed to resolve the prompt, not the worker's scrollback.
+**Prompt-line provenance.** The `-e` flag preserves rendering codes that plain capture drops. On a Claude Code input line after `❯`, dim (`SGR 2`) text is Claude Code's automatic suggestion; never describe it as user input. Plain text in an escape-preserving capture was typed at the prompt, either by a person or through sent keys: describe it only as "typed at the prompt" and do not claim Daniel wrote it unless Daniel confirms. If the capture did not preserve styling or the styling is unfamiliar, its provenance is unknown. A selected menu option marked `❯` is not input. Inspect only the visible screen needed to resolve the prompt, not the worker's scrollback.
 
 ## Decisions
 

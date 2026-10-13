@@ -209,8 +209,37 @@ def test_busy_box_is_not_news_without_a_free_slot(tmp_path, monkeypatch):
     assert checks == []
 
 
+def test_successful_launch_rearms_busy_episode_after_pulse_said_busy(tmp_path, monkeypatch):
+    monkeypatch.setenv("ZAMU_MAX_WORKERS", "1")
+    d = _setup(tmp_path, autolaunch=True, items=2)
+    plan = watch.load(d / "plan.toml", "p")
+    Path(os.environ["ZAMU_CONFIG"]).write_text('admission = ["headroom"]\n')
+    c, ran = FakeCoord(), []
+    clock = [T0]
+    readings = [75, 75, 75, 0, 0, 75, 75]
+
+    def world():
+        w = _world(c, ran)()
+        w.now = lambda: clock[0]
+        inner = w.run
+        def run(argv):
+            if argv[0] == "headroom":
+                return (75, "not now: cpu", "") if readings.pop(0) == 75 else (0, "yes", "")
+            return inner(argv)
+        w.run = run
+        return w
+
+    assert any("box is busy" in a for a in watch.tick(d, config.load(), world, False).attention)
+    clock[0] += dt.timedelta(minutes=5)
+    assert watch.tick(d, config.load(), world, False).launched[0].startswith("i0")
+    engine.mark(plan, d, engine.World(now=lambda: clock[0]), "i0", "done", "finished")
+    clock[0] += dt.timedelta(minutes=15)
+    assert any("box is busy" in a for a in watch.tick(d, config.load(), world, False).attention)
+    assert readings == []
+
+
 def test_a_late_busy_read_does_not_wake_the_pm_as_a_launch_error(tmp_path):
-    d = _setup(tmp_path, items=1)
+    d = _setup(tmp_path, autolaunch=True, items=1)
     Path(os.environ["ZAMU_CONFIG"]).write_text('admission = ["headroom"]\n')
     c, ran, reads = FakeCoord(), [], []
 
@@ -226,6 +255,8 @@ def test_a_late_busy_read_does_not_wake_the_pm_as_a_launch_error(tmp_path):
         return w
 
     first = watch.tick(d, config.load(), world, False)
+    assert len(reads) == 3  # pulse and ready_to_fill admit; prepare gets the late busy read
+    assert first.launched == [] and first.errors == []
     assert not first.news
     assert c.msgs == []
 

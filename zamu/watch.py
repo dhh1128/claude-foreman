@@ -122,7 +122,7 @@ def tick(plan_dir: Path, cfg: config.Config, base_world: Callable[[], engine.Wor
         current = {key(a): a for a in lines if not a.startswith(BUSY_LINE)}
         t.attention = [a for k, a in current.items() if k not in seen]
         watch_state["notified"] = sorted(current)
-        if doc.get("admission", {}).get("ok") is True:
+        if t.launched or doc.get("admission", {}).get("ok") is True:
             watch_state.pop("busy_notified_at", None)
         busy = next((a for a in lines if a.startswith(BUSY_LINE)), None)
         last = engine._parse(watch_state.get("busy_notified_at", ""))

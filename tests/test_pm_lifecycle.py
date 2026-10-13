@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import datetime as dt
+import json
+
 import pytest
 
 from zamu import config, engine, store, watch
@@ -160,3 +163,58 @@ def test_dead_pm_with_attention_but_no_active_worker_asks(tmp_path):
     engine.attach(d, engine.World(now=lambda: T0), str(tmp_path), "pm-x")
     watch.tick(d, config.load(), _world(c, ran), oracles_due=False)
     assert len(c.asks) == 1 and "zamu pm restart p" in c.asks[0][3]
+
+
+def test_pm_launched_without_attach_is_detected_after_grace(w):
+    from test_watch import T0
+    w.zamu("init", "roadmap")
+    d = config.plans_dir() / "roadmap"
+    (d / "plan.toml").write_text(
+        f'[plan]\n[items.a]\ntitle="A"\nkind="build"\nrepo="{w.tmp}"\noracle="manual"\n')
+    w.zamu("pm", "start", "roadmap", "--tmux-session", "project", "--go")
+    sid = store.read(d)["pm"]["target"]
+    plan = watch.load(d / "plan.toml", "roadmap")
+    engine.adopt(plan, d, engine.World(now=lambda: T0), "a", "worker-sid", "", "", "")
+    c = PMCoord()
+    later = engine._parse(store.read(d)["pm"]["since"]) + dt.timedelta(minutes=10)
+    world = lambda: engine.World(coord=c, now=lambda: later,
+                                 cwd=lambda: str(w.tmp))
+    watch.tick(d, config.load(), world, oracles_due=False)
+    pm = store.read(d)["pm"]
+    assert pm["repo"] == str(w.tmp) and pm["target"] == sid
+    assert pm["status"] == "dead" and len(c.asks) == 1
+
+
+def test_attach_during_pm_liveness_check_preserves_new_target(tmp_path):
+    from test_watch import T0, _setup
+    d = _setup(tmp_path, autolaunch=False, items=1)
+    engine.attach(d, engine.World(now=lambda: T0), str(tmp_path), "old-pm")
+    c = PMCoord()
+
+    def replace_pm(repo, target):
+        engine.attach(d, engine.World(now=lambda: T0 + dt.timedelta(minutes=1)),
+                      str(tmp_path), "new-pm")
+        return False
+
+    c.live_target = replace_pm
+    plan = watch.load(d / "plan.toml", "p")
+    changes = engine.check_pm(plan, d, config.load(),
+                              engine.World(coord=c, now=lambda: T0 + dt.timedelta(minutes=2)))
+    pm = store.read(d)["pm"]
+    assert changes == [] and pm["target"] == "new-pm" and pm["status"] == "attached"
+    assert not pm.get("dead_ask") and c.asks == []
+
+
+def test_start_refuses_present_or_unreadable_old_pm_board(w):
+    w.zamu("init", "roadmap")
+    d = config.plans_dir() / "roadmap"
+    (d / "plan.toml").write_text('[plan]\n[items.a]\ntitle="A"\nkind="decision"\n')
+    with store.transaction(d) as doc:
+        doc["pm"] = {"repo": str(w.tmp), "target": "old-pm", "tmux_session": "project"}
+    (w.fake / "board.json").write_text(json.dumps([
+        {"title": "old-pm", "pane": "%9", "session_id": "sid"}]))
+    r = w.zamu("pm", "start", "roadmap", "--go", check=False)
+    assert r.returncode == 2 and "still alive" in r.stderr and w.calls("tmux") == []
+    (w.fake / "board.json").write_text("not json")
+    r = w.zamu("pm", "start", "roadmap", "--go", check=False)
+    assert r.returncode == 2 and "could not check" in r.stderr and w.calls("tmux") == []

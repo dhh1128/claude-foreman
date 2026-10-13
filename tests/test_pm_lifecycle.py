@@ -120,6 +120,20 @@ class PMCoord(Coord):
         return True, ""
 
 
+def test_watcher_records_live_pm_without_waking_it(tmp_path):
+    from test_watch import T0, _setup, _world
+    d = _setup(tmp_path, autolaunch=False, items=1)
+    c, ran = PMCoord(), []
+    c.rows = [{"title": "pm-x", "session_id": "sid"}]
+    engine.attach(d, engine.World(now=lambda: T0), str(tmp_path), "pm-x")
+
+    tick = watch.tick(d, config.load(), _world(c, ran), oracles_due=False)
+
+    assert store.read(d)["pm"]["status"] == "live"
+    assert not tick.news
+    assert c.msgs == []
+
+
 def test_dead_pm_ask_once_then_again_only_after_seen_alive(tmp_path, monkeypatch):
     from test_watch import T0, _setup, _world
     monkeypatch.setenv("ZAMU_MAX_WORKERS", "1")

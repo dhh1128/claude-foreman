@@ -110,7 +110,9 @@ def tick(plan_dir: Path, cfg: config.Config, base_world: Callable[[], engine.Wor
             except (engine.EngineError, LaunchError, OSError) as e:
                 t.errors.append(f"could not launch {iid}: {e}")
 
-    t.changes += engine.check_pm(plan, plan_dir, cfg, w)
+    # The PM's own liveness is useful state, but telling that PM it is alive wakes it for no work.
+    t.changes += [change for change in engine.check_pm(plan, plan_dir, cfg, w)
+                  if change != "PM seen alive"]
 
     with store.transaction(plan_dir) as doc:
         now = w.now()

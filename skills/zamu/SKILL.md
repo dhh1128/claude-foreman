@@ -81,16 +81,18 @@ The cap on live workers comes from config; `zamu` refuses past it and ready item
 - **Worker gone.** Its session ended before the item finished. If it was mid-work, `zamu launch --relaunch <id> --go` resumes the same conversation in a new window. If the item needs rethinking, `zamu mark <id> reset --note "<why>"` returns it to ready.
 - **No report for N hours.** Message the worker through session-coord and ask for a one-line status. Do not open its pane and read the scrollback.
 - **Waiting on the user.** A worker paused at a gate inside its item. These lines are the board's account of what the user owes; gather them into your one line to the user rather than re-asking.
-- **Stuck.** Read the one line. If you or a peer session can answer it, answer it; if it is the user's to decide, file one ask that stands on its own.
+- **Stuck.** Read the one line. If you or a peer session can answer it, answer it; if it is the user's to decide, file one ask that stands on its own. If a reported trust or permission prompt needs inspection, capture the pane with `tmux capture-pane -e -p -t <pane>` and apply the prompt-line rule below.
 - **Claims done, oracle disagrees.** Usually the PR is open and not merged. Leave it. If the oracle is wrong, fix the oracle in the plan file rather than marking done by hand.
 - **Late, or overdue.** The board gives the chain that cannot finish in time. Tell the user once, with the chain and the number of days, and what you would cut.
 - **Leftover processes.** Something a worker started is still running, orphaned or in a deleted worktree; the line names the pids. If the item is live, tell its worker to clean up under its own worktree. `zamu reap` lists what no live worker can own (deleted worktrees, finished items) and `zamu reap --go` kills those; it never kills anything a live worker might be waiting on.
-- **Pane quiet.** A running worker's window has not changed for a while and it has not said it is waiting: it may be sitting at a prompt. Message it, or tell the user which window.
+- **Pane quiet.** A running worker's window has not changed for a while and it has not said it is waiting: it may be sitting at a prompt. Message it, or tell the user which window. If you inspect the visible pane, use `tmux capture-pane -e -p -t <pane>` and apply the prompt-line rule below.
 - **Base moved.** When an item lands, pulse names the items still in flight in the same repo. Tell their workers to rebase before they open or update a PR.
 - **Evidence stale.** A pin the item rests on moved. Re-establish it: `zamu verify <id>` reruns the oracle; for an expensive check, have a worker run it and record `zamu verify <id> --ok <where the proof is>`, or `--fail <why>` to reopen the item. A pin moving after its freeze is the user's to know about at once.
 - **Reopened.** Its evidence failed; it is ready again and needs a worker.
 - **Merges queue in a repo.** Two items will land in one repo. Tell those workers to serialize with `session-coord lock merge`. zamu has no lock of its own, on purpose.
 - **Decision not escalated.** The ask could not be filed; the line says why. Fix that, or file it yourself.
+
+**Prompt-line provenance.** The `-e` flag preserves rendering codes that plain capture drops. On a Claude Code input line after `❯`, attribute text to Daniel only when the text itself is visibly bold (`SGR 1`); a selected menu option marked `❯` is not input. If the text is not bold or the rendering codes are missing, its provenance is unknown. Do not quote or paraphrase text of unknown provenance as Daniel's words: it may be an automatic suggestion. Inspect only the visible screen needed to resolve the prompt, not the worker's scrollback.
 
 ## Decisions
 

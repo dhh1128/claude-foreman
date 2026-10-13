@@ -548,14 +548,13 @@ def test_one_worker_carries_items_in_turn_and_holds_one_slot(w):
     assert "sub-a  subagent" in w.zamu("worker", "list").stdout
 
 
-def test_worker_retire_command_closes_a_finished_window_and_keeps_its_branch(w):
+def test_worker_retire_command_removes_a_finished_workers_tree_and_keeps_its_branch(w):
     repo = w.repos / "app"
     tree = repo / ".worktrees" / "spare"
     tree.parent.mkdir(exist_ok=True)
     subprocess.run(["git", "-C", str(repo), "worktree", "add", "-q", "-b", "spare", str(tree)],
                    check=True)
-    w.zamu("worker", "add", "spare", "--engine", "codex", "--pane", "%42",
-           "--worktree", str(tree))
+    w.zamu("worker", "add", "spare", "--engine", "subagent", "--worktree", str(tree))
     w.zamu("assign", "app-decisions", "spare")
     w.zamu("mark", "app-decisions", "done")
     out = w.zamu("worker", "retire", "spare").stdout
@@ -563,8 +562,7 @@ def test_worker_retire_command_closes_a_finished_window_and_keeps_its_branch(w):
     assert not tree.exists()
     assert "spare" in subprocess.run(["git", "-C", str(repo), "branch", "--list", "spare"],
                                      check=True, capture_output=True, text=True).stdout
-    assert ["kill-window", "-t", "%42"] in w.calls("tmux")
-    assert "spare (codex)" not in w.zamu("board").stdout
+    assert "spare (subagent)" not in w.zamu("board").stdout
 
 
 def test_a_codex_item_launches_codex_with_the_prompt_and_no_session_flag(w):

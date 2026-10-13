@@ -70,7 +70,7 @@ zamu assign <item> <worker>     # prints the brief; you deliver it
 
 zamu watches what each kind allows: session-coord's board for a Claude session, the pane for a window, nothing for a subagent — report for it yourself. The board lists idle workers so you can reuse one before starting another. An item can name its engine (`engine = "codex"`) and `launch` starts that engine with the command config gives it.
 
-When a worker finishes, run `zamu worker retire <wid>` unless you can name the item it will take next soon. Reuse earns the worker's RAM only when that next item is in sight. Retirement closes its window, removes its clean linked worktree, keeps its branch, and records the retirement. A dirty worktree must be committed or cleaned first. A dead worker is never assignable; register or launch a live worker instead.
+When a worker finishes, run `zamu worker retire <wid>` unless you can name the item it will take next soon. Reuse earns the worker's RAM only when that next item is in sight. Retirement closes a window only when its recorded token or session id proves ownership, removes its clean linked worktree, keeps its branch, and records the retirement. If the pane is still there but ownership cannot be proved, close it manually before retiring. A dirty worktree must be committed or cleaned first. A dead worker is never assignable; register or launch a live worker instead.
 
 **A worker someone already started by hand** is adopted rather than relaunched, so zamu watches it like its own: find its session id with `session-coord board --repo <repo> --json`, then `zamu adopt <id> --session <sid> --pane <%N> --worktree <where it works>`. Nothing is launched.
 

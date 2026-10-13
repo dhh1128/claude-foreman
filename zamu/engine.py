@@ -858,6 +858,7 @@ def worker_retire(plan: Plan, plan_dir: Path, world: World, wid: str) -> str:
             raise EngineError(f"could not run {' '.join(argv[:2])} while retiring {wid}: {e}") from None
 
     tree_removed = False
+    window_closed = False
     with store.transaction(plan_dir) as doc:
         w = doc.get("workers", {}).get(wid)
         if w is None:
@@ -888,9 +889,16 @@ def worker_retire(plan: Plan, plan_dir: Path, world: World, wid: str) -> str:
                 raise EngineError(f"worker {wid}'s worktree is dirty; commit or clean it before retiring.")
         pane = w.get("pane", "")
         if pane:
-            rc, out, err = run(["tmux", "kill-window", "-t", pane])
-            if rc != 0 and _idle_worker_status(plan, w, world, world.now()) != "dead":
-                raise EngineError(f"could not close worker {wid}'s window: {(err or out).strip()}")
+            identity = (w.get("token") if w.get("ours") else "") or w.get("session", "")
+            owned = world.pane_has_session(pane, identity) if identity else None
+            if owned is True:
+                rc, out, err = run(["tmux", "kill-window", "-t", pane])
+                if rc != 0:
+                    raise EngineError(f"could not close worker {wid}'s window: {(err or out).strip()}")
+                window_closed = True
+            elif world.pane_has_session(pane, "") is not False:
+                raise EngineError(f"cannot prove pane {pane} still belongs to worker {wid}; "
+                                  "close it manually before retiring.")
         if tree and Path(tree).exists():
             rc, out, err = run(["git", "-C", main, "worktree", "remove", tree])
             if rc != 0:
@@ -899,7 +907,7 @@ def worker_retire(plan: Plan, plan_dir: Path, world: World, wid: str) -> str:
         w["worker"] = "retired"
         w["retired_at"] = _iso(world.now())
         _event(plan_dir, world.now(), "", "worker-retire", wid=wid, pane=pane, worktree=tree)
-    actions = (["window closed"] if pane else []) + (["clean worktree removed"] if tree_removed else [])
+    actions = (["window closed"] if window_closed else []) + (["clean worktree removed"] if tree_removed else [])
     return f"worker {wid} retired; {', '.join(actions) if actions else 'registry closed'}; branch kept"
 
 
@@ -918,7 +926,8 @@ def assign(plan: Plan, plan_dir: Path, world: World, iid: str, wid: str, note: s
             raise EngineError(f"no worker {wid!r}; register it with `zamu worker add`.")
         status = _idle_worker_status(plan, w, world, now)
         if status in ("dead", "retired") or (status == "unknown" and
-                                             w.get("worker") == "dead"):
+                                             (w.get("worker") == "dead" or
+                                              (w.get("items") and (w.get("pane") or w.get("session"))))):
             raise EngineError(f"worker {wid} is {status}; register or launch a live worker instead.")
         sts = graph.states(plan, doc)
         rec = _rec(doc, iid)

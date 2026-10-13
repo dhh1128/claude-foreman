@@ -125,6 +125,10 @@ def summary(plan: Plan, doc: dict[str, Any], cfg: Config, now: dt.datetime) -> d
             if w.get("worker") not in ("dead", "retired")
             and (not (w.get("pane") or w.get("session")) or w.get("worker") == "live")
             and not any(sts.get(i) in graph.ACTIVE for i in w.get("items", []))]
+    unknown = [f"{wid} ({w.get('engine', '?')})" for wid, w in doc.get("workers", {}).items()
+               if (w.get("pane") or w.get("session")) and w.get("worker") != "live"
+               and w.get("worker") not in ("dead", "retired")
+               and not any(sts.get(i) in graph.ACTIVE for i in w.get("items", []))]
     waiting = []
     for iid, it in plan.items.items():
         if it.kind != "build" and sts[iid] == "ready":
@@ -148,7 +152,8 @@ def summary(plan: Plan, doc: dict[str, Any], cfg: Config, now: dt.datetime) -> d
     return {"plan": plan.name, "date": now.date().isoformat(), "workers": [used, cap],
             "elsewhere": elsewhere,
             "counts": counts, "attention": attention, "active": active,
-            "launchable": launch, "idle_workers": idle, "slots": max(cap - used, 0), "waiting": waiting,
+            "launchable": launch, "idle_workers": idle, "unknown_workers": unknown,
+            "slots": max(cap - used, 0), "waiting": waiting,
             "blocked": blocked, "done": [i for i in plan.items if sts[i] == "done"],
             "states": sts}
 
@@ -174,6 +179,8 @@ def board(plan: Plan, doc: dict[str, Any], cfg: Config, now: dt.datetime) -> str
                    + ", ".join(s["launchable"]))
     if s["idle_workers"]:
         out.append("idle workers, assignable: " + ", ".join(s["idle_workers"]))
+    if s["unknown_workers"]:
+        out.append("idle workers, unknown: " + ", ".join(s["unknown_workers"]))
     if s["waiting"]:
         out.append("waiting: " + ", ".join(s["waiting"]))
     if s["blocked"]:

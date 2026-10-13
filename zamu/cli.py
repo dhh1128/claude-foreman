@@ -74,11 +74,18 @@ def _tmux_session() -> str:
 def _pane_has_session(pane: str, sid: str) -> bool | None:
     """Does any process in `pane` carry `sid` in its argv? None when it cannot be told."""
     try:
+        panes = subprocess.run(["tmux", "list-panes", "-a", "-F", "#{pane_id}"],
+                               capture_output=True, text=True, timeout=5)
+        if panes.returncode != 0:
+            return None
+        if pane not in panes.stdout.splitlines():
+            return False
+        if not sid:
+            return True
         r = subprocess.run(["tmux", "display-message", "-p", "-t", pane, "#{pane_pid}"],
                            capture_output=True, text=True, timeout=5)
         if r.returncode != 0:
-            # tmux answered: the pane is gone. A missing server is a failure to look.
-            return False if "can't find" in r.stderr else None
+            return None
         root = int(r.stdout.strip())
         ps = subprocess.run(["ps", "-eo", "pid=,ppid=,args="], capture_output=True, text=True,
                             timeout=5)

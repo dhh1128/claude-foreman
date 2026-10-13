@@ -42,6 +42,9 @@ elif a[:1] == ["msg"]:
 TMUX = r'''#!/usr/bin/env python3
 import json, os, sys
 d = os.environ["FAKE_DIR"]
+if sys.argv[1:2] == ["list-panes"] and os.path.exists(os.path.join(d, "tmux-list-fails")):
+    print("no server running", file=sys.stderr)
+    sys.exit(1)
 if sys.argv[1:2] in (["list-panes"], ["display-message"]):
     sys.exit(0)  # queries: no panes, no activity; not logged, so call counts mean launches
 p = os.path.join(d, "tmux.calls")

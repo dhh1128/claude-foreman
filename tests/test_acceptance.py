@@ -353,9 +353,11 @@ def test_dead_worker_is_detected_from_session_coord_and_can_be_relaunched(w):
     assert board(w)["workers"] == [0, 3]  # a dead worker holds no slot
 
     (w.fake / "board.json").write_text("not json")  # session-coord could not be read
+    (w.fake / "tmux-list-fails").touch()  # tmux could not be read either
     w.zamu("pulse")
     assert "running unknown" in w.zamu("board").stdout
 
+    (w.fake / "tmux-list-fails").unlink()
     w.set_board([])
     w.zamu("pulse")
     out = w.zamu("launch", "--relaunch", "app-decisions", "--go", env={"TMUX": ""}).stdout

@@ -76,6 +76,8 @@ An idle Codex worker held 200–300 MB on Daniel's box, and four finished window
 
 **Pane ownership is checked again at retirement.** A tmux pane id can be reused after a server restart, so `worker retire` kills a window only when its recorded worker token or session id is still in that pane's process tree. If the pane is gone it can finish retirement without a kill; if the pane exists but ownership cannot be proved it refuses, even for a hand-started Codex window with no token. Rejected: using pane existence alone, which could kill a different worker. If a registered window's liveness cannot be checked, the board shows it as unknown outside the assignable idle list, and assignment refuses to reuse it. Subagents remain assignable with their intrinsically unknown liveness because they have no machine proof to query.
 
+**A successful pane listing proves absence.** On tmux 3.6, `display-message -p -t %N '#{pane_pid}'` can exit successfully with empty output for a missing pane. Pane liveness now checks `list-panes -a -F '#{pane_id}'` first: an absent id after a successful listing is dead, while a failed listing, including no server, remains unknown. A present id proves a hand-started worker's pane exists; proving ownership still requires its process tree. Rejected: treating an empty or failed `display-message` as proof of absence, because it cannot distinguish a missing pane from an unreadable process id.
+
 ## Done can be undone (R-EPTZ)
 
 In a stack of repos pinned to each other, "done" is a claim about a set of pins. The summit re-ran ten consecutive cold starts for every milestone on each re-pin, and kept SHAs and evidence paths by hand in a narrative plan that drifted. A plan can now declare `[pins.<name>]` with a command that prints the pin's value, and items `rests_on` them. A pin that moves flags every done item resting on it as stale; a pin that moves after its `freeze` date says so. `verify` re-establishes the evidence: by rerunning the oracle, by recording a check run elsewhere (`--ok <evidence>`, for a falsifier too expensive to run in a pulse), or by reopening the item (`--fail`). A reopened item is not closed again by its oracle alone, because the oracle may be the thing that failed to notice. Evidence is recorded with the pin values it was established at. An unreadable pin is never a move.
@@ -134,6 +136,8 @@ The summit build, with a hard date five weeks out, was offered zamu on 2026-10-1
 ## Known gaps — what has not been verified
 
 **Worker retirement has only been tested with real temporary git worktrees and fake tmux.** Closing a real worker window and removing its worktree have not been tried end to end on a running plan.
+
+**The pane listing fix has only been tested with fake tmux.** Its empty successful `display-message` response reproduces the observed tmux 3.6 behavior; a real server and pane disappearance between listing and process lookup have not been exercised.
 
 **Known gap for file report audit:** `events.jsonl` is appended while `state.json` is still in its transaction, as with command reports. A process crash after the event append but before the atomic state write can leave a duplicate event when the file line is replayed. The report state, offset, and PM message remain safe; the event log's existing write order is not a cross-file transaction.
 

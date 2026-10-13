@@ -3,16 +3,76 @@
 from __future__ import annotations
 
 import datetime as dt
+import os
 from pathlib import Path
 
 import pytest
 
 from fakes import git, make_repo
-from zamu import engine, render, store
+from zamu import cli, engine, render, store
 from zamu.config import Config
 from zamu.plan import parse
 
 NOW = dt.datetime(2026, 10, 13, tzinfo=dt.timezone.utc)
+
+
+def fake_empty_display(tmp_path: Path, monkeypatch, panes: str = "", fail_list: bool = False):
+    """tmux 3.6 can exit successfully with empty display output for a missing pane."""
+    bindir = tmp_path / "fakebin"
+    bindir.mkdir()
+    tmux = bindir / "tmux"
+    tmux.write_text("""#!/usr/bin/env python3
+import os, sys
+if sys.argv[1] == "list-panes":
+    if os.environ.get("FAKE_TMUX_FAIL_LIST"):
+        print("no server running", file=sys.stderr)
+        sys.exit(1)
+    print(os.environ.get("FAKE_TMUX_PANES", ""), end="")
+elif sys.argv[1] == "display-message":
+    print("")
+else:
+    sys.exit(2)
+""")
+    tmux.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setenv("FAKE_TMUX_PANES", panes)
+    if fail_list:
+        monkeypatch.setenv("FAKE_TMUX_FAIL_LIST", "1")
+
+
+def test_empty_display_for_missing_pane_proves_it_gone(tmp_path, monkeypatch):
+    fake_empty_display(tmp_path, monkeypatch, panes="%8\n%10\n")
+    assert cli._pane_has_session("%9", "") is False
+    assert cli._pane_has_session("%9", "worker-token") is False
+    assert cli._pane_has_session("%8", "") is True
+    assert cli._pane_has_session("%8", "worker-token") is None
+
+
+def test_failed_list_panes_leaves_liveness_unknown(tmp_path, monkeypatch):
+    fake_empty_display(tmp_path, monkeypatch, fail_list=True)
+    assert cli._pane_has_session("%9", "") is None
+    assert cli._pane_has_session("%9", "worker-token") is None
+
+
+def test_gone_pane_is_dead_and_can_be_retired_without_kill(tmp_path, monkeypatch):
+    plan, repo, tree = setup_worker(tmp_path)
+    fake_empty_display(tmp_path, monkeypatch, panes="%8\n")
+    world = engine.World(now=lambda: NOW, pane_has_session=cli._pane_has_session)
+    engine.refresh_idle_workers(plan, tmp_path, world)
+    assert store.read(tmp_path)["workers"]["cx"]["worker"] == "dead"
+    assert "cx (codex)" not in render.summary(plan, store.read(tmp_path), Config(), NOW)["idle_workers"]
+    calls = []
+
+    def run(argv):
+        calls.append(list(argv))
+        return engine.launch_mod.default_run(argv)
+
+    retire_world = engine.World(now=lambda: NOW, run=run, pane_has_session=cli._pane_has_session)
+    assert "retired" in engine.worker_retire(plan, tmp_path, retire_world, "cx")
+    assert not tree.exists()
+    assert git("-C", str(repo), "branch", "--list", "a").strip() == "a"
+    assert not any(c[0] == "tmux" for c in calls)
+    assert store.read(tmp_path)["workers"]["cx"]["worker"] == "retired"
 
 
 def setup_worker(tmp_path: Path):

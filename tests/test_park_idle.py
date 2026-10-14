@@ -121,6 +121,7 @@ def test_parked_resume_keeps_the_launched_model_after_plan_tier_changes(tmp_path
     cfg = Config(models={'claude': {'deep': ModelSpec('fable')}})
     ln, = engine.prepare(plan, tmp_path, cfg, world(T0, []), ['a'], parked=True,
                          unblocked='approval arrived')
+    assert 'tier light, model sonnet' in render.show(plan, store.read(tmp_path), 'a', [], cfg)
     assert (ln.tier, ln.model) == ('light', 'sonnet')
     assert ('--model', 'sonnet') in [ln.steps[-1].argv[i:i + 2]
                                     for i in range(len(ln.steps[-1].argv))]

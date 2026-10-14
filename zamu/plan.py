@@ -222,6 +222,8 @@ def parse(text: str, path: Path, name: str | None = None) -> Plan:
         model = d.get("model", "")
         if not isinstance(model, str) or ("model" in d and not model.strip()):
             raise PlanError(f"{where}: model must be a nonempty string when set.")
+        if "\x00" in model:
+            raise PlanError(f"{where}: model contains a NUL byte.")
         items[iid] = Item(
             id=iid, title=title, kind=kind, repo=repo,
             topic=str(d.get("topic", "")).strip() or iid,

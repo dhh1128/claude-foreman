@@ -191,6 +191,10 @@ def load() -> Config:
             model, effort = spec["model"], spec.get("reasoning_effort", "")
             if not isinstance(model, str) or not model.strip() or not isinstance(effort, str):
                 raise ConfigError(f"[models.{engine}].{tier} needs nonempty model and string reasoning_effort.")
+            if "\x00" in model:
+                raise ConfigError(f"[models.{engine}].{tier} model contains a NUL byte.")
+            if "\x00" in effort:
+                raise ConfigError(f"[models.{engine}].{tier} reasoning_effort contains a NUL byte.")
             if effort and engine != "codex":
                 raise ConfigError(f"[models.{engine}].{tier}: reasoning_effort applies only to codex.")
             parsed_models[engine][tier] = ModelSpec(model.strip(), effort.strip())

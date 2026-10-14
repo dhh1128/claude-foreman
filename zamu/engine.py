@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import budgets, graph, launch as launch_mod, oracles, procs as procs_mod, store
-from .config import Config, ModelSpec
+from .config import Config, ConfigError, ModelSpec
 from .coord import Coord
 from .plan import Item, Plan
 
@@ -1129,7 +1129,17 @@ def ready_to_fill(plan: Plan, plan_dir: Path, cfg: Config,
         if ok is False:
             return []
     readings = _budget_readings(cfg, world) if world is not None and cfg.budgets else (budgets.read() or {})
-    ready = [i for i in ready if _choose(plan.items[i], cfg, load, readings)[0]]
+    usable = []
+    for iid in ready:
+        it = plan.items[iid]
+        chosen, _ = _choose(it, cfg, load, readings)
+        if chosen:
+            try:
+                cfg.model_for(chosen, it.tier, it.model)
+            except ConfigError:
+                continue
+            usable.append(iid)
+    ready = usable
     return ready[:1] if cfg.admission or cfg.budgets else ready[:max(cap - used, 0)]
 
 

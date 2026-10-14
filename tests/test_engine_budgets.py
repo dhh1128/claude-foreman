@@ -129,6 +129,18 @@ def test_missing_default_box_config_remains_optional(tmp_path, monkeypatch):
     assert config.load().engines['claude'] == ('claude',)
 
 
+def test_box_model_id_with_nul_is_refused(tmp_path):
+    config.config_path().write_text('[models.claude]\ndeep = "\\u0000"\n')
+    with pytest.raises(config.ConfigError, match="NUL"):
+        config.load()
+
+
+def test_box_reasoning_effort_with_nul_is_refused(tmp_path):
+    config.config_path().write_text('[models.codex.deep]\nmodel="gpt-6"\nreasoning_effort="\\u0000"\n')
+    with pytest.raises(config.ConfigError, match="NUL"):
+        config.load()
+
+
 def test_show_uses_planned_model_after_launch_is_no_longer_live(tmp_path):
     plan = parse('[items.a]\ntitle="A"\nkind="build"\nrepo="/r"\n'
                  'oracle="manual"\ntier="deep"\n', tmp_path / 'plan.toml')

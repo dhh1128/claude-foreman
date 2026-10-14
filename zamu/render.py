@@ -150,6 +150,12 @@ def summary(plan: Plan, doc: dict[str, Any], cfg: Config, now: dt.datetime) -> d
         it = plan.items[iid]
         selected, reason = engine._choose(it, cfg, load, readings)
         if selected:
+            try:
+                cfg.model_for(selected, it.tier, it.model)
+            except ConfigError as e:
+                waiting.append(f"{iid} (ready, waits for model mapping)")
+                attention.append(f"{iid}: {e}")
+                continue
             eligible.append(iid)
         if selected is None and reason:
             if all(readings.get(e, {}).get('verdict') == 'not-now' for e in it.engines):
@@ -251,7 +257,7 @@ def show(plan: Plan, doc: dict[str, Any], iid: str, events: list[dict[str, Any]]
     if it.repo:
         lines.append(f"  repo {it.repo}  topic {it.topic}")
     if it.kind == "build":
-        current_launch = st in graph.ACTIVE and r.get("worker") != "dead"
+        current_launch = (st in graph.ACTIVE and r.get("worker") != "dead") or st == "parked"
         lines.append(f"  engine {r.get('engine') if current_launch and r.get('engine') else ', '.join(it.engines)}")
         if current_launch:
             lines.append(f"  tier {r.get('tier') or 'default'}, model {r.get('model') or 'default'}"

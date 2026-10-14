@@ -44,6 +44,12 @@ def test_unknown_tier_is_refused_at_plan_load():
               'tier="ultra"\n')
 
 
+def test_model_id_with_nul_is_refused_at_plan_load():
+    with pytest.raises(PlanError, match="model.*NUL"):
+        _plan('[items.a]\ntitle="A"\nkind="build"\nrepo="/r"\noracle="manual"\n'
+              'model="\\u0000"\n')
+
+
 def test_dangling_dependency_is_refused_and_named():
     with pytest.raises(PlanError, match="'b'.*not in the plan"):
         _plan("""

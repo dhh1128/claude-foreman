@@ -108,7 +108,7 @@ def tick(plan_dir: Path, cfg: config.Config, base_world: Callable[[], engine.Wor
                 t.launched.append(f"{iid} resumed (pane {got.get('pane', '?')})")
             except engine.BusyError:
                 pass
-            except (engine.EngineError, LaunchError, OSError) as e:
+            except (config.ConfigError, engine.EngineError, LaunchError, OSError) as e:
                 t.errors.append(f"could not resume {iid}: {e}")
         for iid in engine.ready_to_fill(plan, plan_dir, cfg, w):
             try:
@@ -117,7 +117,7 @@ def tick(plan_dir: Path, cfg: config.Config, base_world: Callable[[], engine.Wor
                 t.launched.append(f"{iid} (pane {got.get('pane', '?')})")
             except engine.BusyError:
                 pass  # a later reading refused; next tick will reconsider admission
-            except (engine.EngineError, LaunchError, OSError) as e:
+            except (config.ConfigError, engine.EngineError, LaunchError, OSError) as e:
                 t.errors.append(f"could not launch {iid}: {e}")
 
     # The PM's own liveness is useful state, but telling that PM it is alive wakes it for no work.

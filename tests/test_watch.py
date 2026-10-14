@@ -83,6 +83,17 @@ def test_autolaunch_fills_free_slots_and_tells_the_pm_once(tmp_path, monkeypatch
     assert [l.split()[0] for l in t.launched] == ["i2"]
 
 
+def test_unmapped_tier_does_not_stop_another_autolaunch(tmp_path, monkeypatch):
+    monkeypatch.setenv("ZAMU_MAX_WORKERS", "1")
+    d = _setup(tmp_path, items=2)
+    p = d / "plan.toml"
+    p.write_text(p.read_text().replace('[items.i0]\n', '[items.i0]\ntier="deep"\n'))
+    c, ran = FakeCoord(), []
+    t = watch.tick(d, config.load(), _world(c, ran), oracles_due=False)
+    assert [line.split()[0] for line in t.launched] == ["i1"]
+    assert any("i0" in line and "no model for tier" in line for line in t.attention)
+
+
 def test_without_autolaunch_nothing_is_launched(tmp_path):
     d = _setup(tmp_path, autolaunch=False)
     c, ran = FakeCoord(), []

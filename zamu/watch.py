@@ -186,35 +186,40 @@ def cycle(ref: str | None, cfg: config.Config, base_world: Callable[[], engine.W
             try:
                 doc = store.read(d)
                 ready = engine.ready_to_fill(plan, d, cfg, w, all_candidates=True)
+                resumable = engine.ready_to_resume(plan, d, cfg, w)
             except (store.StoreError, TimeoutError, OSError) as e:
                 t.errors.append(str(e))
                 continue
             own = len([i for i, st in graph.states(plan, doc).items() if st in graph.ACTIVE])
-            for iid in ready:
+            for iid, parked in ([(iid, False) for iid in ready]
+                                + [(iid, True) for iid in resumable]):
                 if (plan.name, iid) in failed:
                     continue
-                selected, _ = engine._choose(plan.items[iid], cfg, engine.engine_load(plan, doc),
-                                             engine._budget_readings(cfg, w) if cfg.budgets else {})
+                rec = doc['items'].get(iid, {})
+                selected = (rec.get('engine') if parked else
+                            engine._choose(plan.items[iid], cfg, engine.engine_load(plan, doc),
+                                           engine._budget_readings(cfg, w) if cfg.budgets else {})[0])
                 if cfg.budgets and selected in launched_engines:
                     continue
-                since = engine._parse(doc['items'].get(iid, {}).get('ready_since', ''))
+                since = engine._parse(rec.get('parked', {}).get('at', '') if parked else
+                                      rec.get('ready_since', ''))
                 candidates.append((own < cfg.reserve.get(plan.name, 0),
                                    cfg.priority.get(plan.name, 0), since or w.now(),
-                                   plan.name, iid, d, plan, w, t, selected))
+                                   plan.name, iid, d, plan, w, t, selected, parked))
         if not candidates:
             break
         candidates.sort(key=lambda c: (-int(c[0]), -c[1], c[2], c[3], c[4]))
-        _, _, _, name, iid, d, plan, w, t, selected = candidates[0]
+        _, _, _, name, iid, d, plan, w, t, selected, parked = candidates[0]
         try:
-            (ln,) = engine.prepare(plan, d, cfg, w, [iid])
+            (ln,) = engine.prepare(plan, d, cfg, w, [iid], parked=parked)
             got = engine.commit_launch(plan, d, cfg, w, ln)
-            t.launched.append(f"{iid} (pane {got.get('pane', '?')})")
+            t.launched.append(f"{iid}{' resumed' if parked else ''} (pane {got.get('pane', '?')})")
             if selected:
                 launched_engines.add(selected)
         except engine.BusyError:
             failed.add((name, iid))
         except (engine.EngineError, LaunchError, OSError) as e:
-            t.errors.append(f"could not launch {iid}: {e}")
+            t.errors.append(f"could not {'resume' if parked else 'launch'} {iid}: {e}")
             failed.add((name, iid))
         if cfg.admission:
             break  # load from a launch is not visible to admission until the next tick

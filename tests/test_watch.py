@@ -413,3 +413,24 @@ def test_cross_plan_fill_respects_max_workers_with_more_candidates(tmp_path):
     assert sum(r.get('state') == 'running' for d in (first, second)
                for r in store.read(d)['items'].values()) == 1
     assert len([a for a in ran if a[:2] == ['tmux', 'new-window']]) == 1
+
+
+def test_all_plan_priority_includes_parked_workers_ready_to_resume(tmp_path):
+    parked = _other_plan(tmp_path, 'parked')
+    ready = _other_plan(tmp_path, 'ready')
+    repo = tmp_path / 'repos' / 'parked0'
+    tree = repo / '.worktrees' / 'i0'
+    tree.mkdir(parents=True)
+    with store.transaction(parked) as doc:
+        doc['items']['i0'] = {
+            'state': 'parked', 'engine': 'claude', 'session': 'sid', 'worktree': str(tree),
+            'parked': {'at': T0.isoformat(), 'session': 'sid', 'asks': ['Q-1234'],
+                       'asks_seen': ['Q-1234'], 'prior_state': 'running'},
+        }
+    c, ran = FakeCoord(), []
+    c.open_asks = lambda _repo: set()
+    cfg = config.Config(max_workers=1, priority={'parked': 10})
+    ticks = watch.cycle(None, cfg, _world(c, ran), False, notify=False)
+    assert [t.plan for t in ticks if t.launched] == ['parked']
+    assert store.read(parked)['items']['i0']['state'] == 'running'
+    assert store.read(ready)['items']['i0'].get('state') != 'running'

@@ -95,6 +95,20 @@ def test_commit_records_selected_engine_and_rechecks_budget(tmp_path, monkeypatc
     assert store.read(tmp_path)['items']['a']['engine'] == 'claude'
 
 
+def test_relaunch_keeps_recorded_model_when_box_mapping_changes(tmp_path, monkeypatch):
+    plan = parse('[items.a]\ntitle="A"\nkind="build"\nrepo="/r"\n'
+                 'oracle="manual"\ntier="deep"\n', tmp_path / 'plan.toml')
+    cfg = Config()
+    with store.transaction(tmp_path) as doc:
+        doc['items']['a'] = {'state': 'running', 'worker': 'dead', 'session': 's1',
+                             'engine': 'claude', 'tier': 'deep', 'model': 'fable',
+                             'reasoning_effort': '', 'worktree': '/r/.worktrees/a'}
+    monkeypatch.setattr('zamu.launch.worktree_exists', lambda p: True)
+    (launch,) = engine.prepare(plan, tmp_path, cfg, engine.World(), ['a'], relaunch=True)
+    assert (launch.tier, launch.model) == ('deep', 'fable')
+    assert ('--model', 'fable') in [s.argv[i:i + 2] for s in launch.steps for i in range(len(s.argv))]
+
+
 def test_cap_holder_is_named_on_board_and_launch(tmp_path):
     plan = parse('[items.a]\ntitle="A"\nkind="build"\nrepo="/r"\noracle="manual"\n'
                  '[items.b]\ntitle="B"\nkind="build"\nrepo="/r"\noracle="manual"\n',

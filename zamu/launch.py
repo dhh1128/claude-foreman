@@ -20,6 +20,7 @@ from __future__ import annotations
 import shlex
 import subprocess
 import uuid
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Sequence
@@ -51,6 +52,9 @@ class Launch:
     pm_guard: tuple[str, str, str] = ("", "", "")  # target, status, since before a PM launch
     engine: str = "claude"
     parked: bool = False
+    tier: str = ""
+    model: str = ""
+    reasoning_effort: str = ""
 
 
 def worker_prompt(plan: Plan, it: Item, worktree: str, resume: bool, changed: str = "") -> str:
@@ -106,7 +110,8 @@ def plan_pm_launch(plan: Plan, repo: str, tmux_session: str, claude: Sequence[st
 def plan_launch(plan: Plan, it: Item, *, tmux_session: str, claude: Sequence[str],
                 default_branch: str, worktree_exists: bool, branch_exists: bool,
                 session: str | None = None, worktree: str = "", engine: str = "claude",
-                changed: str = "", parked: bool = False) -> Launch:
+                changed: str = "", parked: bool = False, model: str = "",
+                reasoning_effort: str = "", tier: str | None = None) -> Launch:
     """The exact commands for one launch. `session` given means resume that conversation.
 
     `worktree` names a tree the worker already used -- an adopted worker may have run in the
@@ -136,16 +141,24 @@ def plan_launch(plan: Plan, it: Item, *, tmux_session: str, claude: Sequence[str
     target = f"{tmux_session}:" if tmux_session else ""
     if engine == "claude":
         cmd = list(claude) + (["--resume", sid] if resume else ["--session-id", sid])
+        if model:
+            cmd += ["--model", model]
     else:
         cmd = list(claude)  # other engines take the prompt as their first argument
         if engine == "codex":
+            if model:
+                cmd += ["-m", model]
+            if reasoning_effort:
+                cmd += ["-c", f"model_reasoning_effort={json.dumps(reasoning_effort)}"]
             if resume:
                 cmd += ["resume", sid]
             # Codex otherwise stops at an unattended "Trust this folder?" prompt. The
             # command-line config applies to this launch without editing the user's config.
-            import json
             for root in (repo, wt):
                 cmd += ["-c", f'projects.{json.dumps(root)}.trust_level="trusted"']
+        elif model:
+            raise LaunchError(f"engine {engine!r} has no known model flag; use claude or codex, "
+                              "or put the model flag in its [engines] command.")
     cmd.append(worker_prompt(plan, it, wt, resume, changed))
     tmux = ["tmux", "new-window", "-d", "-P", "-F", "#{pane_id}"]
     if target:
@@ -162,7 +175,9 @@ def plan_launch(plan: Plan, it: Item, *, tmux_session: str, claude: Sequence[str
     tmux += ["-n", it.topic, "-c", wt, *shell]
     steps.append(Step(tuple(tmux), "open a window running the worker", capture="pane"))
     return Launch(it.id, sid, wt, it.topic, resume, tuple(steps), token=sid, engine=engine,
-                  parked=parked)
+                  parked=parked,
+                  tier=it.tier if tier is None else tier, model=model,
+                  reasoning_effort=reasoning_effort)
 
 
 # --- facts about the repo, gathered before planning ---------------------------------------

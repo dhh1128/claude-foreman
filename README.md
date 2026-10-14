@@ -67,6 +67,8 @@ cmd = "git -C /home/me/code/app show HEAD:pyproject.toml | grep -o 'core.git@[0-
 rests_on = ["core"]               # a moved pin makes this item's evidence stale
 engine = "codex"                  # launched with config's [engines] codex command
 # engine = ["codex", "claude"]     # try in order; a single string keeps its old meaning
+tier = "standard"                 # deep, standard, or light; mapped by box config per engine
+# model = "gpt-5.3-codex"         # optional exact model, overriding the tier mapping
 ```
 
 Items can also say who they wait on and when to nag, and a decision can be held until a wait drags on:
@@ -152,12 +154,24 @@ budget_ask_minutes = 60
 [engines]
 codex = ["codex"]
 
+[models.claude]
+deep = "fable"
+standard = "opus"
+light = "sonnet"
+
+[models.codex]
+deep = { model = "gpt-5.3-codex", reasoning_effort = "high" }
+standard = { model = "gpt-5.3-codex", reasoning_effort = "medium" }
+light = { model = "gpt-5.3-codex", reasoning_effort = "low" }
+
 [budgets.codex]
 probe = ["zamu", "budget", "codex", "--max-pct", "60"]
 
 [budgets.claude]
 probe = ["zamu", "budget", "claude", "--projects", "~/.claude/projects", "--max-pct", "85"]
 ```
+
+An item with no `tier` or `model` uses its engine's default model. A tier requires a mapping for the engine chosen at launch; a missing mapping stops that launch with a configuration error. An explicit `model` on the item takes precedence over its tier and uses the engine's default reasoning effort. `zamu launch` shows the tier and resolved model in its dry run, and `zamu show` shows the planned or launched model. Claude receives `--model`; Codex receives `-m` and, when configured, `-c model_reasoning_effort=...`. Budgets remain keyed to the engine account, and the chosen model is saved on the launch record.
 
 A probe prints one JSON object with optional `figure`, `used_pct`, `resets_at`, and `estimate` fields. Exit 0 admits, 75 means not now, and any other exit means zamu could not look. A missing budget entry always admits that engine through this check. An unknown reading can be used only if no preferred engine admits; the board shows it as unknown. CPU and memory admission still falls back to the count cap when its check cannot look. The difference is deliberate: a budget failure can consume a whole worker session, while a box check failure is bounded by the worker count.
 

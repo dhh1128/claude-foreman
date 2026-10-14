@@ -25,6 +25,7 @@ from typing import Any, Mapping
 from . import oracles
 
 KINDS = ("build", "decision", "external")
+TIERS = ("deep", "standard", "light")
 #: States a plan file may pin by hand. The others are computed or recorded by the CLI.
 PINNABLE = ("done", "abandoned")
 ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
@@ -52,6 +53,8 @@ class Item:
     ref: str = ""            # free text: a tracker id, an issue, a PR -- shown, never parsed
     base: str = ""           # branch to start the worktree from; default origin's HEAD
     engine: str | tuple[str, ...] = "claude"   # preference order, or a legacy single engine
+    tier: str = ""         # judgement needed; empty uses the engine's default model
+    model: str = ""        # explicit model id overrides a tier mapping
     rests_on: tuple[str, ...] = ()   # pins whose movement makes this item's evidence stale
     #: Other repos this item's work lands in. `repo` is where its worker starts; a change that
     #: spans a test suite and a library touches both, and merges queue in each.
@@ -181,7 +184,7 @@ def parse(text: str, path: Path, name: str | None = None) -> Plan:
     items: dict[str, Item] = {}
     allowed = {"title", "kind", "repo", "topic", "depends_on", "oracle", "brief", "question",
                "due", "estimate", "state", "ref", "base", "engine", "rests_on", "touches",
-               "waiting_on", "nag_after", "ask_when"}
+               "waiting_on", "nag_after", "ask_when", "tier", "model"}
     for iid, d in raw_items.items():
         where = f"item {iid!r}"
         if not ID_RE.match(iid):
@@ -213,6 +216,12 @@ def parse(text: str, path: Path, name: str | None = None) -> Plan:
         if pinned and pinned not in PINNABLE:
             raise PlanError(f"{where}: state {pinned!r} cannot be set in the plan; only "
                             f"{list(PINNABLE)} can. The rest are computed or reported.")
+        tier = d.get("tier", "")
+        if not isinstance(tier, str) or tier not in ("", *TIERS):
+            raise PlanError(f"{where}: tier {tier!r} is not one of {list(TIERS)}.")
+        model = d.get("model", "")
+        if not isinstance(model, str) or ("model" in d and not model.strip()):
+            raise PlanError(f"{where}: model must be a nonempty string when set.")
         items[iid] = Item(
             id=iid, title=title, kind=kind, repo=repo,
             topic=str(d.get("topic", "")).strip() or iid,
@@ -226,6 +235,7 @@ def parse(text: str, path: Path, name: str | None = None) -> Plan:
             pinned=pinned, ref=str(d.get("ref", "")).strip(),
             base=str(d.get("base", "")).strip(),
             engine=_engines(d.get("engine", "claude"), where),
+            tier=tier, model=model.strip(),
             rests_on=_strs(d.get("rests_on"), where, "rests_on"),
             touches=tuple(_path(t, base) for t in _strs(d.get("touches"), where, "touches")),
             waiting_on=str(d.get("waiting_on", "")).strip(),

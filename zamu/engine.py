@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import budgets, graph, launch as launch_mod, oracles, procs as procs_mod, store
-from .config import Config
+from .config import Config, ModelSpec
 from .coord import Coord
 from .plan import Item, Plan
 
@@ -1075,12 +1075,17 @@ def prepare(plan: Plan, plan_dir: Path, cfg: Config, world: World, ids: list[str
                               f"known: {', '.join(sorted(cfg.engines))}. Add it under [engines].")
         if relaunch and selected != "claude":
             session = None  # only claude can resume a conversation; others start over
+        saved = rec if relaunch and "model" in rec else None
+        spec = (ModelSpec(rec.get("model", ""), rec.get("reasoning_effort", "")) if saved else
+                cfg.model_for(selected, it.tier, it.model))
         out.append(launch_mod.plan_launch(
             plan, it, tmux_session=cfg.tmux_session or world.tmux_session(),
             claude=cfg.engines[selected], engine=selected,
             default_branch=default, worktree_exists=exists,
             branch_exists=False if exists else launch_mod.branch_exists(it.repo, it.topic, world.run),
-            session=session, worktree=kept, changed=changed, parked=parked))
+            session=session, worktree=kept, changed=changed, parked=parked,
+            model=spec.model, reasoning_effort=spec.reasoning_effort,
+            tier=rec.get("tier", it.tier) if saved else it.tier))
     return out
 
 
@@ -1159,6 +1164,9 @@ def commit_launch(plan: Plan, plan_dir: Path, cfg: Config, world: World,
         got = launch_mod.execute(ln, world.run)
         rec = _rec(doc, ln.item)
         rec["engine"] = engine
+        rec["tier"] = ln.tier
+        rec["model"] = ln.model
+        rec["reasoning_effort"] = ln.reasoning_effort
         state = (rec.get("parked", {}).get("prior_state", "running") if was_parked else
                  rec.get("state") if ln.resume or rec.get("state") in graph.ACTIVE else "running")
         rec.update({"state": state,

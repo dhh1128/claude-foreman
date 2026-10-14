@@ -579,6 +579,58 @@ def test_a_codex_item_launches_codex_with_the_prompt_and_no_session_flag(w):
     assert "--session-id" not in line and " zamu-worker:" in line
 
 
+def test_tier_mapping_override_and_default_are_visible_in_launch_and_show(w):
+    Path(os.environ["ZAMU_CONFIG"]).write_text(
+        '[engines]\ncodex = ["codex"]\n'
+        '[models.claude]\ndeep = "fable"\nstandard = "opus"\nlight = "sonnet"\n'
+        '[models.codex]\nstandard = { model = "gpt-5.3-codex", reasoning_effort = "high" }\n')
+    p = w.plan_dir / "plan.toml"
+    original = p.read_text()
+    p.write_text(original.replace('[items.app-decisions]\n',
+                                  '[items.app-decisions]\ntier = "light"\n'))
+    out = w.zamu("launch", "app-decisions").stdout
+    assert "tier light, model sonnet" in out and " --model sonnet " in out
+    assert "tier light, model sonnet" in w.zamu("show", "app-decisions").stdout
+    p.write_text(p.read_text().replace('tier = "light"', 'tier = "deep"\nmodel = "opus"'))
+    out = w.zamu("launch", "app-decisions").stdout
+    assert "tier deep, model opus" in out and " --model opus " in out
+    p.write_text(original)
+    out = w.zamu("launch", "app-decisions").stdout
+    assert "model default" in out and " --model " not in out
+    p.write_text(original.replace('[items.app-decisions]\n',
+                                  '[items.app-decisions]\nengine = "codex"\ntier = "standard"\n'))
+    out = w.zamu("launch", "app-decisions").stdout
+    assert "tier standard, model gpt-5.3-codex" in out
+    command = shlex.split(next(l for l in out.splitlines() if l.startswith("tmux new-window")))
+    model_at = command.index("-m")
+    assert command[model_at:model_at + 4] == ["-m", "gpt-5.3-codex", "-c",
+                                               'model_reasoning_effort="high"']
+    w.zamu("launch", "app-decisions", "--go")
+    record = json.loads((w.plan_dir / "state.json").read_text())["items"]["app-decisions"]
+    assert record["engine"] == "codex" and record["model"] == "gpt-5.3-codex"
+    assert record["tier"] == "standard" and record["reasoning_effort"] == "high"
+    assert "tier standard, model gpt-5.3-codex, reasoning high" in w.zamu("show", "app-decisions").stdout
+
+
+def test_unknown_tier_fails_check(w):
+    p = w.plan_dir / "plan.toml"
+    p.write_text(p.read_text().replace('[items.app-decisions]\n',
+                                       '[items.app-decisions]\ntier = "ultra"\n'))
+    r = w.zamu("check", check=False)
+    assert r.returncode == 2 and "tier 'ultra'" in r.stderr
+
+
+def test_tier_without_box_mapping_refuses_launch_but_explicit_model_works(w):
+    p = w.plan_dir / "plan.toml"
+    p.write_text(p.read_text().replace('[items.app-decisions]\n',
+                                       '[items.app-decisions]\ntier = "deep"\n'))
+    r = w.zamu("launch", "app-decisions", check=False)
+    assert r.returncode == 2 and "no model for tier 'deep' on engine 'claude'" in r.stderr
+    assert "tier deep, model unconfigured (claude)" in w.zamu("show", "app-decisions").stdout
+    p.write_text(p.read_text().replace('tier = "deep"', 'tier = "deep"\nmodel = "fable"'))
+    assert " --model fable " in w.zamu("launch", "app-decisions").stdout
+
+
 def test_an_item_naming_an_unknown_engine_is_refused_at_launch(w):
     p = w.plan_dir / "plan.toml"
     p.write_text(p.read_text().replace('[items.app-decisions]\n',

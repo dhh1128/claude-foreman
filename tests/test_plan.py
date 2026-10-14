@@ -28,6 +28,20 @@ brief = "briefs/a.md"
     assert a.brief == "/plans/x/briefs/a.md"
     assert a.oracle == ("file:/tmp/a",)
     assert p.name == "x"
+    assert a.tier == "" and a.model == ""
+
+
+def test_item_model_tier_and_override_are_parsed():
+    p = _plan('[items.a]\ntitle="A"\nkind="build"\nrepo="/r"\noracle="manual"\n'
+              'tier="deep"\nmodel="claude-opus-4-1"\n')
+    assert p.items["a"].tier == "deep"
+    assert p.items["a"].model == "claude-opus-4-1"
+
+
+def test_unknown_tier_is_refused_at_plan_load():
+    with pytest.raises(PlanError, match="tier 'ultra'.*deep.*standard.*light"):
+        _plan('[items.a]\ntitle="A"\nkind="build"\nrepo="/r"\noracle="manual"\n'
+              'tier="ultra"\n')
 
 
 def test_dangling_dependency_is_refused_and_named():

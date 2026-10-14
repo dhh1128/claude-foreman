@@ -274,7 +274,9 @@ def cmd_launch(args) -> int:
     launches = engine.prepare(plan, d, cfg, w, ids, relaunch=args.relaunch)
     for ln in launches:
         print(f"# {ln.item}: worktree {ln.worktree}, session {ln.session}"
-              + (" (resume)" if ln.resume else ""))
+              + (" (resume)" if ln.resume else "")
+              + f", tier {ln.tier or 'default'}, model {ln.model or 'default'}"
+              + (f", reasoning {ln.reasoning_effort}" if ln.reasoning_effort else ""))
         for s in ln.steps:
             print(s.shell())
         if args.go:
@@ -415,7 +417,8 @@ def cmd_show(args) -> int:
     plan, d = _load(args)
     if args.item not in plan.items:
         raise PlanError(f"no item {args.item!r}.")
-    sys.stdout.write(render.show(plan, store.read(d), args.item, store.events(d, args.item)))
+    sys.stdout.write(render.show(plan, store.read(d), args.item, store.events(d, args.item),
+                                 config.load()))
     return 0
 
 

@@ -12,7 +12,7 @@ import datetime as dt
 from typing import Any
 
 from . import budgets, engine, graph
-from .config import Config
+from .config import Config, ConfigError
 from .plan import Plan
 
 
@@ -241,7 +241,8 @@ def board(plan: Plan, doc: dict[str, Any], cfg: Config, now: dt.datetime) -> str
     return "\n".join(out) + "\n"
 
 
-def show(plan: Plan, doc: dict[str, Any], iid: str, events: list[dict[str, Any]]) -> str:
+def show(plan: Plan, doc: dict[str, Any], iid: str, events: list[dict[str, Any]],
+         cfg: Config | None = None) -> str:
     it = plan.items[iid]
     r = doc.get("items", {}).get(iid, {})
     st = graph.states(plan, doc)[iid]
@@ -249,6 +250,21 @@ def show(plan: Plan, doc: dict[str, Any], iid: str, events: list[dict[str, Any]]
              + (f", ref {it.ref}" if it.ref else "")]
     if it.repo:
         lines.append(f"  repo {it.repo}  topic {it.topic}")
+    if it.kind == "build":
+        lines.append(f"  engine {r.get('engine') or ', '.join(it.engines)}")
+        if "model" in r:
+            lines.append(f"  tier {r.get('tier') or 'default'}, model {r['model'] or 'default'}"
+                         + (f", reasoning {r['reasoning_effort']}" if r.get('reasoning_effort') else ""))
+        elif cfg is not None:
+            for name in it.engines:
+                try:
+                    spec = cfg.model_for(name, it.tier, it.model)
+                except ConfigError:
+                    lines.append(f"  tier {it.tier}, model unconfigured ({name})")
+                    continue
+                lines.append(f"  tier {it.tier or 'default'}, model {spec.model or 'default'}"
+                             + (f", reasoning {spec.reasoning_effort}" if spec.reasoning_effort else "")
+                             + (f" ({name})" if len(it.engines) > 1 else ""))
     if it.depends_on:
         lines.append(f"  depends on {', '.join(it.depends_on)}")
     if it.oracle:

@@ -43,6 +43,12 @@ class ConfigError(ValueError):
     pass
 
 
+@dataclass(frozen=True)
+class ModelSpec:
+    model: str = ""
+    reasoning_effort: str = ""
+
+
 def env(name: str) -> str:
     """ZAMU_<name>, else the FOREMAN_<name> it was called before the rename (2026-10-12)."""
     return os.environ.get(f"ZAMU_{name}") or os.environ.get(f"FOREMAN_{name}") or ""
@@ -84,6 +90,8 @@ class Config:
     engine_caps: dict = field(default_factory=dict)
     #: engine -> command returning JSON and exit 0 (admit), 75 (not now), other (unknown).
     budgets: dict = field(default_factory=dict)
+    #: engine -> tier -> model and optional Codex reasoning effort.
+    models: dict[str, dict[str, ModelSpec]] = field(default_factory=dict)
     budget_refresh_minutes: float = 10.0
     budget_ask_minutes: float = 60.0
 
@@ -93,6 +101,17 @@ class Config:
 
     def cap(self, plan_cap: int | None) -> int:
         return min(self.max_workers, plan_cap) if plan_cap else self.max_workers
+
+    def model_for(self, engine: str, tier: str, override: str = "") -> ModelSpec:
+        if override:
+            return ModelSpec(override)
+        if not tier:
+            return ModelSpec()
+        spec = self.models.get(engine, {}).get(tier)
+        if spec is None:
+            raise ConfigError(f"no model for tier {tier!r} on engine {engine!r}; add "
+                              f"[models.{engine}] {tier} to box config or set model on the item.")
+        return spec
 
 
 def load() -> Config:
@@ -147,6 +166,28 @@ def load() -> Config:
             raise ConfigError(f"[budgets.{name}].probe must be a nonempty command list.")
         parsed[name] = tuple(command)
     kw["budgets"] = parsed
+    models = kw.get("models", {})
+    if not isinstance(models, dict):
+        raise ConfigError("[models] must map engine names to tier mappings.")
+    parsed_models = {}
+    for engine, tiers in models.items():
+        if not isinstance(tiers, dict):
+            raise ConfigError(f"[models.{engine}] must map tiers to models.")
+        parsed_models[engine] = {}
+        for tier, spec in tiers.items():
+            if tier not in ("deep", "standard", "light"):
+                raise ConfigError(f"[models.{engine}] has unknown tier {tier!r}.")
+            if isinstance(spec, str):
+                spec = {"model": spec}
+            if not isinstance(spec, dict) or set(spec) - {"model", "reasoning_effort"} or "model" not in spec:
+                raise ConfigError(f"[models.{engine}].{tier} needs a model and optional reasoning_effort.")
+            model, effort = spec["model"], spec.get("reasoning_effort", "")
+            if not isinstance(model, str) or not model.strip() or not isinstance(effort, str):
+                raise ConfigError(f"[models.{engine}].{tier} needs nonempty model and string reasoning_effort.")
+            if effort and engine != "codex":
+                raise ConfigError(f"[models.{engine}].{tier}: reasoning_effort applies only to codex.")
+            parsed_models[engine][tier] = ModelSpec(model.strip(), effort.strip())
+    kw["models"] = parsed_models
     for key in ("budget_refresh_minutes", "budget_ask_minutes", "park_after_minutes"):
         if not isinstance(kw.get(key, 10), (int, float)) or kw.get(key, 10) <= 0:
             raise ConfigError(f"{key} must be positive.")

@@ -41,3 +41,33 @@ def test_codex_chrome_only_has_no_quote():
                "GPT-6-Sol high · ~/code/repo · Read brief\n"
                "? for shortcuts\n")
     assert pane.last_visible_line(capture) is None
+
+
+def test_wrapped_unsent_codex_input_is_labelled_as_unsent():
+    capture = (FIXTURES / "codex_unsent_pane.txt").read_text()
+    assert pane.last_visible_line(capture) == \
+        '(unsent input: "zamu-prj: Please review the first result and check whether…")'
+
+
+def test_queued_codex_message_and_tool_result_are_chrome():
+    capture = (FIXTURES / "codex_queued_pane.txt").read_text()
+    assert pane.last_visible_line(capture) == "I finished checking the parser tests."
+
+
+def test_wrapped_codex_tool_output_is_chrome():
+    capture = ("• I finished checking the parser tests.\n"
+               "• Ran git status --short\n"
+               "  └ first output line\n"
+               "    another output line\n"
+               "    + 52 lines (^t to expand)\n"
+               "› Ask Codex to do anything\n"
+               "GPT-6-Sol high · ~/code/repo · Read brief\n")
+    assert pane.last_visible_line(capture) == "I finished checking the parser tests."
+
+
+def test_wrapped_unsent_claude_input_is_labelled_as_unsent():
+    capture = ("Worker update is complete.\n"
+               "❯ Please check the updated branch and\n"
+               "  tell me when I can land it.\n")
+    assert pane.last_visible_line(capture) == \
+        '(unsent input: "Please check the updated branch and tell me when I can land…")'

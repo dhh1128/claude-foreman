@@ -83,7 +83,9 @@ def summary(plan: Plan, doc: dict[str, Any], cfg: Config, now: dt.datetime) -> d
             if mins >= cfg.pane_quiet_minutes:
                 line = f"{iid}: pane quiet {mins}m; it may be sitting at a prompt"
                 if r.get("pane_quote"):
-                    line += f'; last visible: "{_short(r["pane_quote"], 80)}"'
+                    quote = _short(r["pane_quote"], 80)
+                    line += (f"; last visible: {quote}" if quote.startswith("(unsent input: ")
+                             else f'; last visible: "{quote}"')
                 attention.append(line)
     by_item: dict[tuple[str, bool], list[dict]] = {}
     for f in doc.get("leftovers", []):

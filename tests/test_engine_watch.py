@@ -117,6 +117,15 @@ def test_unreadable_or_chrome_only_pane_has_no_quote(tmp_path):
         assert not any("last visible:" in a for a in att)
 
 
+def test_quiet_pane_marks_wrapped_input_as_unsent(tmp_path):
+    plan = _setup(tmp_path)
+    quiet_since = (T0 - dt.timedelta(minutes=50)).timestamp()
+    capture = (Path(__file__).parent / "fixtures" / "codex_unsent_pane.txt").read_text()
+    engine.pulse(plan, tmp_path, Config(), _world(T0, [], quiet_since, capture=capture))
+    att = render.summary(plan, store.read(tmp_path), Config(), T0)["attention"]
+    assert any('last visible: (unsent input: "zamu-prj: Please review' in line for line in att)
+
+
 def test_pane_capture_reads_visible_screen_only_and_returns_none_on_failure(monkeypatch):
     calls = []
 

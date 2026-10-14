@@ -664,10 +664,8 @@ def _leftovers(plan: Plan, plan_dir: Path, doc: dict[str, Any], sts: dict[str, s
                          "why": list(f.why), "cwd": f.proc.cwd, "cmd": f.proc.cmd[:120],
                          "reapable": f.reapable} for f in found]
     new = [f for f in found if f.proc.key not in before]
-    return [(f"live worker in a deleted worktree pid {f.proc.pid} ({f.item})"
-             if "live worker in a deleted worktree" in f.why else
-             f"leftover pid {f.proc.pid} ({f.item or 'no item'}): {', '.join(f.why)}")
-            for f in new]
+    return [f"leftover pid {f.proc.pid} ({f.item or 'no item'}): {', '.join(f.why)}"
+            for f in new if "live worker in a deleted worktree" not in f.why]
 
 
 def _quiet_panes(plan: Plan, doc: dict[str, Any], sts: dict[str, str], world: World) -> None:

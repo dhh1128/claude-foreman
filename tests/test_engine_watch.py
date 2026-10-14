@@ -130,13 +130,14 @@ def test_a_live_session_sitting_in_a_deleted_worktree_is_never_reaped(tmp_path):
     assert killed == [] and all(l.startswith("leave") for l in lines)
 
 
-def test_deleted_live_worker_is_reported_only_to_its_own_plan(tmp_path, monkeypatch):
+def test_deleted_live_worker_is_info_only_on_its_own_multi_repo_plan(tmp_path, monkeypatch):
     plan = _setup(tmp_path)
     monkeypatch.setenv("ZAMU_HOME", str(tmp_path / "state"))
     other_dir = tmp_path / "state" / "plans" / "other"
     other_dir.mkdir(parents=True)
     (other_dir / "plan.toml").write_text(
-        '[items.x]\ntitle="X"\nkind="build"\nrepo="/x"\noracle="manual"\n')
+        '[items.x]\ntitle="X"\nkind="build"\nrepo="/x"\noracle="manual"\n'
+        '[items.y]\ntitle="Y"\nkind="build"\nrepo="/y"\noracle="manual"\n')
     other = parse((other_dir / "plan.toml").read_text(), other_dir / "plan.toml")
     with store.transaction(other_dir) as doc:
         doc["items"]["x"] = {"state": "running", "session": "sid-x", "wid": "sid-x"}
@@ -147,19 +148,50 @@ def test_deleted_live_worker_is_reported_only_to_its_own_plan(tmp_path, monkeypa
           Proc(73, 72, gone, 1, 8, "mcp-helper", "confer-server", 17 / 60)]
     engine.pulse(plan, tmp_path, Config(), _world(T0, ps))
     assert store.read(tmp_path)["leftovers"] == []
-    engine.pulse(other, other_dir, Config(), _world(T0, ps))
+    assert engine.pulse(other, other_dir, Config(), _world(T0, ps))["changes"] == []
     findings = store.read(other_dir)["leftovers"]
     assert {f["pid"] for f in findings} == {70, 71, 72, 73}
     assert all(f["item"] == "x" and not f["reapable"] for f in findings)
-    lines = render.summary(other, store.read(other_dir), Config(), T0)["attention"]
-    assert any("live worker in a deleted worktree" in line for line in lines)
-    assert not any("leftover" in line for line in lines)
+    summary = render.summary(other, store.read(other_dir), Config(), T0)
+    assert not any("worktree" in line or "leftover" in line for line in summary["attention"])
+    assert "x: worktree gone, worker still live" in summary["info"]
+    board = render.board(other, store.read(other_dir), Config(), T0)
+    assert "info:\n  x: worktree gone, worker still live" in board
     assert all("would kill" not in line for line in engine.reap(
         other, other_dir, Config(), _world(T0, ps), False))
     killed = []
     engine.reap(other, other_dir, Config(), _world(T0, ps), True,
                 kill=lambda p: killed.append(p.pid) or "killed")
     assert killed == []
+
+
+def test_deleted_worker_after_item_done_is_attention(tmp_path):
+    plan = _setup(tmp_path)
+    gone = WT + " (deleted)"
+    ps = [Proc(70, 1, gone, 1, 5, "sh -c zamu-worker:s1", "", 60),
+          Proc(71, 70, gone, 1, 6, "claude --session-id s1", "sh", 60),
+          Proc(72, 71, gone, 1, 7, "confer-server", "claude", 60)]
+    with store.transaction(tmp_path) as doc:
+        doc["items"]["a"]["state"] = "done"
+        doc["procs"] = {p.key: {"cpu": p.cpu, "since": T0.timestamp() - 3600} for p in ps}
+    engine.pulse(plan, tmp_path, Config(), _world(T0, ps))
+    summary = render.summary(plan, store.read(tmp_path), Config(), T0)
+    assert any("leftover" in line and "pids 70 71 72" in line for line in summary["attention"])
+    assert summary["info"] == []
+
+
+def test_orphan_from_live_workers_deleted_worktree_stays_attention(tmp_path):
+    plan = _setup(tmp_path)
+    gone = WT + " (deleted)"
+    ps = [Proc(70, 1, gone, 1, 5, "sh -c zamu-worker:s1", "", 60),
+          Proc(71, 70, gone, 1, 6, "claude --session-id s1", "sh", 60),
+          Proc(72, 1, gone, 1, 7, "confer-server", "", 60)]
+    with store.transaction(tmp_path) as doc:
+        doc["procs"] = {p.key: {"cpu": p.cpu, "since": T0.timestamp() - 3600} for p in ps}
+    engine.pulse(plan, tmp_path, Config(), _world(T0, ps))
+    summary = render.summary(plan, store.read(tmp_path), Config(), T0)
+    assert "a: worktree gone, worker still live" in summary["info"]
+    assert any("leftover" in line and "pids 72" in line for line in summary["attention"])
 
 
 def test_another_plans_worker_child_is_not_our_leftover(tmp_path, monkeypatch):

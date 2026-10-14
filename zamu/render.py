@@ -35,6 +35,7 @@ def summary(plan: Plan, doc: dict[str, Any], cfg: Config, now: dt.datetime) -> d
     used, cap = engine.slots(plan, doc, cfg)
     elsewhere = engine.busy_elsewhere(plan)
     attention: list[str] = []
+    info: list[str] = []
     saved = budgets.read() if cfg.budgets else {}
     readings = (saved if saved is not None else
                 {e: {"verdict": "unknown", "why": "could not read budgets.json", "data": {}}
@@ -80,8 +81,7 @@ def summary(plan: Plan, doc: dict[str, Any], cfg: Config, now: dt.datetime) -> d
         pids = " ".join(str(f["pid"]) for f in fs[:6]) + (" …" if len(fs) > 6 else "")
         why = sorted({w for f in fs for w in f["why"]})
         if live_deleted:
-            attention.append(f"{item}: live worker in a deleted worktree, pids {pids}; "
-                             "tell its worker to leave the deleted worktree")
+            info.append(f"{item}: worktree gone, worker still live")
             continue
         who = (f"{item}: tell its worker to kill them" if item and not all(f["reapable"] for f in fs)
                else f"{item or 'deleted worktrees'}: `zamu reap --go` kills them")
@@ -200,7 +200,8 @@ def summary(plan: Plan, doc: dict[str, Any], cfg: Config, now: dt.datetime) -> d
               for s in ("done", "running", "review", "parked", "ready", "blocked", "abandoned")}
     return {"plan": plan.name, "date": now.date().isoformat(), "workers": [used, cap],
             "elsewhere": elsewhere,
-            "counts": counts, "attention": attention, "active": active, "parked": parked,
+            "counts": counts, "attention": attention, "info": info,
+            "active": active, "parked": parked,
             "launchable": launch, "idle_workers": idle, "unknown_workers": unknown,
             "budgets": readings,
             "slots": max(cap - used, 0), "waiting": waiting,
@@ -228,6 +229,9 @@ def board(plan: Plan, doc: dict[str, Any], cfg: Config, now: dt.datetime) -> str
     if s["attention"]:
         out.append("attention:")
         out += [f"  {a}" for a in s["attention"]]
+    if s["info"]:
+        out.append("info:")
+        out += [f"  {line}" for line in s["info"]]
     if s["active"]:
         out.append("active:")
         out += [f"  {a}" for a in s["active"]]

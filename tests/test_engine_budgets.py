@@ -3,6 +3,8 @@
 import datetime as dt
 import json
 
+import pytest
+
 from zamu import budgets, engine, render, store
 from zamu import config
 from zamu.config import Config
@@ -157,6 +159,39 @@ def test_busy_box_does_not_start_budget_tradeoff_episode(tmp_path):
     doc['admission'] = {'ok': False, 'why': 'memory pressure'}
     readings = {e: {'verdict': 'not-now', 'data': {}} for e in cfg.budgets}
     assert engine.budget_waiting(plan, doc, cfg, readings) == []
+
+
+@pytest.mark.parametrize('hold', ['busy', 'slots', 'engine_cap'])
+def test_load_only_tick_preserves_budget_wait_age(tmp_path, hold):
+    plan = parse('[items.a]\ntitle="A"\nkind="build"\nrepo="/r"\noracle="manual"\n'
+                 '[items.b]\ntitle="B"\nkind="build"\nrepo="/r"\noracle="manual"\n',
+                 tmp_path / 'plan.toml')
+    cfg = Config(max_workers=1 if hold == 'slots' else 3,
+                 engine_caps={'claude': 1} if hold == 'engine_cap' else {},
+                 budgets={'claude': ('probe',)})
+    doc = store.empty()
+    doc['items']['b'] = {'state': 'done'}
+    asks = []
+
+    class Coord:
+        def ask_add(self, *args):
+            asks.append(args)
+            return True, 'filed'
+
+    w = engine.World(coord=Coord(), now=lambda: NOW, cwd=lambda: '/r')
+    spent = {'claude': {'verdict': 'not-now', 'data': {
+        'figure': 'spent', 'resets_at': (NOW + dt.timedelta(days=1)).isoformat()}}}
+    engine._budget_episode(plan, tmp_path, doc, cfg, w, NOW, spent)
+    if hold == 'busy':
+        doc['admission'] = {'ok': False, 'why': 'busy'}
+    else:
+        doc['items']['b'] = {'state': 'running', 'engine': 'claude',
+                             'worker': 'live', 'session': 's1'}
+    engine._budget_episode(plan, tmp_path, doc, cfg, w, NOW + dt.timedelta(minutes=30), spent)
+    doc.pop('admission', None)
+    doc['items']['b'] = {'state': 'done'}
+    engine._budget_episode(plan, tmp_path, doc, cfg, w, NOW + dt.timedelta(minutes=61), spent)
+    assert len(asks) == 1
 
 
 def test_shared_account_command_is_probed_once_and_cached(tmp_path):

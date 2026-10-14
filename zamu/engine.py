@@ -577,8 +577,9 @@ def _budget_episode(plan: Plan, plan_dir: Path, doc: dict[str, Any], cfg: Config
             doc["budget_episode"] = {"number": episode.get("number", 0) + 1}
         episode = doc["budget_episode"]
     item_since = episode.setdefault("item_since", {})
+    states = graph.states(plan, doc)
     for iid in list(item_since):
-        if iid not in waiting:
+        if states.get(iid) != "ready":
             item_since.pop(iid)
     if not waiting:
         return []
@@ -876,11 +877,18 @@ def prepare(plan: Plan, plan_dir: Path, cfg: Config, world: World, ids: list[str
             if len(it.engines) == 1 and it.engines[0] not in cfg.engines:
                 raise EngineError(f"{iid} wants engine {it.engines[0]!r}, which config does not define; "
                                   f"known: {', '.join(sorted(cfg.engines))}. Add it under [engines].")
-            if len(it.engines) == 1 and it.engines[0] in cfg.engine_caps:
-                e = it.engines[0]
-                if load.get(e, 0) >= cfg.engine_caps[e]:
-                    raise EngineError(f"{cfg.engine_caps[e]} {e} worker(s) are live, its cap; {iid} waits (or set engine = \"<another>\" on it).")
-            raise EngineError(f"{iid} waits for an engine: {reason}")
+            caps = []
+            for e in it.engines:
+                ecap = cfg.engine_caps.get(e)
+                if ecap is None or load.get(e, 0) < ecap:
+                    continue
+                holders = [h if "/" in h else f"{plan.name}/{h}"
+                           for h in engine_holders(plan, doc, e)]
+                caps.append(f"{e} cap {ecap} held by {', '.join(holders) or 'no worker (cap is zero)'}")
+            if len(it.engines) == 1 and caps:
+                raise EngineError(f"{iid} waits: {caps[0]} (or set engine = \"<another>\" on it).")
+            raise EngineError(f"{iid} waits for an engine: {reason}"
+                              + (f"; {'; '.join(caps)}" if caps else ""))
         if not relaunch:
             load[selected] = load.get(selected, 0) + 1
         kept = rec.get("worktree", "") if relaunch else ""

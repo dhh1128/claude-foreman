@@ -122,6 +122,40 @@ def test_missing_relative_file_is_a_known_state_and_creation_moves_it(tmp_path):
         f'work: {target} changed since it reported waiting on it; tell it to resume']
 
 
+def test_explicit_file_target_tracks_a_missing_extensionless_name(tmp_path):
+    plan = setup(tmp_path)
+    w = world(tmp_path)
+    engine.report(plan, tmp_path, w, 'work', 'waiting', 'peer will create READY', on='file:READY')
+    target = tmp_path / 'READY'
+    saved = store.read(tmp_path)['items']['work']['wait_target']
+    assert saved == {'kind': 'file', 'value': str(target), 'fingerprint': 'missing'}
+    target.write_text('ready')
+    assert engine.pulse(plan, tmp_path, Config(escalate='none'), w)['changes'] == [
+        f'work: {target} changed since it reported waiting on it; tell it to resume']
+
+
+def test_explicit_ask_target_uses_the_open_ask_queue(tmp_path):
+    plan = setup(tmp_path)
+    asks = {'Q-ABCD'}
+    w = world(tmp_path, asks)
+    engine.report(plan, tmp_path, w, 'work', 'waiting', 'peer answer', on='ask:Q-ABCD')
+    saved = store.read(tmp_path)['items']['work']['wait_target']
+    assert saved == {'kind': 'ask', 'value': 'Q-ABCD', 'observed_open': True}
+    asks.clear()
+    assert engine.pulse(plan, tmp_path, Config(escalate='none'), w)['changes'] == [
+        'work: ask Q-ABCD closed since it reported waiting on it; tell it to resume']
+
+
+def test_explicit_prefix_controls_ambiguous_names(tmp_path):
+    plan = setup(tmp_path)
+    w = world(tmp_path, {'Q-ABCD'})
+    engine.report(plan, tmp_path, w, 'work', 'waiting', 'peer creates a marker', on='file:Q-ABCD')
+    saved = store.read(tmp_path)['items']['work']['wait_target']
+    assert saved['kind'] == 'file' and saved['value'] == str(tmp_path / 'Q-ABCD')
+    with pytest.raises(engine.EngineError, match='A- or Q- id'):
+        engine.report(plan, tmp_path, w, 'work', 'waiting', 'peer answer', on='ask:READY')
+
+
 def test_new_blocker_or_claimed_done_clears_previous_named_wait(tmp_path):
     plan = setup(tmp_path)
     w = world(tmp_path)

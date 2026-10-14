@@ -142,16 +142,26 @@ def _file_fingerprint(path: str) -> list[int] | str | None:
 
 def _wait_target(raw: str, cwd: str, repo: str, world: World) -> dict[str, Any]:
     value = raw.strip()
+    explicit_file = value.startswith("file:")
+    explicit_ask = value.startswith("ask:")
+    if explicit_file or explicit_ask:
+        value = value.split(":", 1)[1]
+        if not value:
+            raise EngineError("--on file: needs a path" if explicit_file else
+                              "--on ask: needs an A- or Q- id")
     if value == "pm":
-        return {"kind": "pm", "value": "pm"}
-    if re.fullmatch(r"[AQ]-[A-Z0-9]+", value):
+        if not (explicit_file or explicit_ask):
+            return {"kind": "pm", "value": "pm"}
+    if explicit_ask and not re.fullmatch(r"[AQ]-[A-Z0-9]+", value):
+        raise EngineError("--on ask: needs an A- or Q- id")
+    if explicit_ask or (not explicit_file and re.fullmatch(r"[AQ]-[A-Z0-9]+", value)):
         if not repo:
             raise EngineError("an ask target needs the item's repo for session-coord")
         opened = world.coord.open_asks(repo)
         return {"kind": "ask", "value": value,
                 "observed_open": None if opened is None else value in opened}
     path = Path(value).expanduser()
-    if value and (path.is_absolute() or "/" in value or value.startswith(".") or path.suffix or
+    if value and (explicit_file or path.is_absolute() or "/" in value or value.startswith(".") or path.suffix or
                   (Path(cwd) / path).exists()):
         resolved = str(path if path.is_absolute() else Path(cwd) / path)
         fingerprint = _file_fingerprint(resolved)

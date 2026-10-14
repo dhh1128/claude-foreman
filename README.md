@@ -131,7 +131,7 @@ PM commands use the tmux session and repo recorded by `attach`; `--tmux-session`
 
 A worker confined to its worktree can append a newline terminated report to `<worktree>/.zamu/reports`: `<ISO time> <running|review|done|stuck|waiting> <one line>`. Each pulse reads complete new lines from active workers and handles them like `zamu report`. zamu creates `.zamu/.gitignore` when it launches a worktree.
 
-A `waiting` report without `--on` is a wait on Daniel. `--on` names a file path, an `A-` or `Q-` ask id in the item's repository, or `pm` for a worker queued by its PM. Pulse records a file's modification time and size at report time and calls attention when they change; it likewise calls attention when an observed open ask closes. A target change stays on the board until the worker reports progress. Session names are not accepted because session-coord does not expose message history to zamu. File reports have no `--on` field; use the command for named waits.
+A `waiting` report without `--on` is a wait on Daniel. `--on` names a file path, an `A-` or `Q-` ask id in the item's repository, or `pm` for a worker queued by its PM. Use `--on file:READY` for a missing extensionless file, or `--on ask:Q-ABCD` to name an ask explicitly; bare paths and ask IDs remain accepted when their kind is clear. Pulse records a file's modification time and size at report time and calls attention when they change; it likewise calls attention when an observed open ask closes. A target change stays on the board until the worker reports progress. Session names are not accepted because session-coord does not expose message history to zamu. File reports have no `--on` field; use the command for named waits.
 
 ## Configure
 

@@ -189,7 +189,7 @@ You were started with a prompt naming your plan and item. Read the briefs it nam
 - `running` at each real milestone, not every step;
 - `review` with the PR URL once it is open;
 - `done` when you believe the work is finished — zamu checks the exit condition itself, so a `done` before the merge leaves the item in review, which is correct. Add `--evidence <path or URL>` naming where the proof lives (a run log, an evidence file, the PR);
-- `waiting` when you pause: name what is needed, and add `--on <file path>` when a peer is editing a file, `--on <A- or Q- ask id>` when an open ask must close, or `--on pm` when the PM has queued your branch to land. Without `--on`, the board treats the wait as Daniel's decision. A changed file or closed ask produces one pulse notice for the PM to tell you to resume;
+- `waiting` when you pause: name what is needed, and add `--on <file path>` when a peer is editing a file, `--on <A- or Q- ask id>` when an open ask must close, or `--on pm` when the PM has queued your branch to land. Use `--on file:READY` for a missing extensionless file and `--on ask:Q-ABCD` when an explicit ask spelling helps. Without `--on`, the board treats the wait as Daniel's decision. A changed file or closed ask produces one pulse notice for the PM to tell you to resume;
 - `stuck` with what you need, when you cannot go on for any other reason.
 
 One line each. The PM reads them every wake, and a paragraph costs it context every time.

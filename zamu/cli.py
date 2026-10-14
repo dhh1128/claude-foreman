@@ -639,7 +639,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("state", choices=engine.REPORT_STATES)
     s.add_argument("line")
     s.add_argument("--evidence", help="where the proof lives: a path, a URL, a run id")
-    s.add_argument("--on", help="waiting target: file path, ask id, or pm")
+    s.add_argument("--on", help="waiting target: file path, ask id, pm, file:<path>, or ask:<id>")
     s.set_defaults(func=cmd_report)
     s = sub.add_parser("mark", help="close a manual item, abandon one, or reset it")
     plan_arg(s)

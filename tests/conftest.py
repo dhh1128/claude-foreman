@@ -20,7 +20,9 @@ import pytest  # noqa: E402
 def _isolated_home(tmp_path, monkeypatch):
     """No test may read or write the real state root, config, or addendum."""
     monkeypatch.setenv("ZAMU_HOME", str(tmp_path / "state"))
-    monkeypatch.setenv("ZAMU_CONFIG", str(tmp_path / "config.toml"))
+    config = tmp_path / "config.toml"
+    config.write_text("")
+    monkeypatch.setenv("ZAMU_CONFIG", str(config))
     monkeypatch.setenv("ZAMU_ADDENDUM", str(tmp_path / "addendum.md"))
     monkeypatch.delenv("ZAMU_PLAN", raising=False)
     monkeypatch.delenv("ZAMU_MAX_WORKERS", raising=False)

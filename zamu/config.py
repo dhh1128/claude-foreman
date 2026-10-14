@@ -116,10 +116,15 @@ class Config:
 
 def load() -> Config:
     p = config_path()
+    selected = bool(env("CONFIG"))
     try:
         doc = tomllib.loads(p.read_text())
     except FileNotFoundError:
+        if selected:
+            raise ConfigError(f"{p}: selected box config is missing.") from None
         doc = {}
+    except UnicodeError as e:
+        raise ConfigError(f"{p}: could not decode box config: {e}") from None
     except OSError as e:
         raise ConfigError(f"{p}: could not read box config: {e}") from None
     except tomllib.TOMLDecodeError as e:

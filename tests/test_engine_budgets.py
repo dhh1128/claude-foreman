@@ -122,6 +122,13 @@ def test_relaunch_of_pre_model_worker_keeps_engine_default(tmp_path, monkeypatch
     assert '--model' not in launch.steps[-1].argv
 
 
+def test_missing_default_box_config_remains_optional(tmp_path, monkeypatch):
+    monkeypatch.delenv('ZAMU_CONFIG')
+    monkeypatch.delenv('FOREMAN_CONFIG', raising=False)
+    monkeypatch.setattr(config, 'config_path', lambda: tmp_path / 'absent.toml')
+    assert config.load().engines['claude'] == ('claude',)
+
+
 def test_show_uses_planned_model_after_launch_is_no_longer_live(tmp_path):
     plan = parse('[items.a]\ntitle="A"\nkind="build"\nrepo="/r"\n'
                  'oracle="manual"\ntier="deep"\n', tmp_path / 'plan.toml')

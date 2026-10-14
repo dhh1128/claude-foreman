@@ -638,6 +638,22 @@ def test_show_reports_unreadable_box_config_as_a_coded_error(w):
     assert "Traceback" not in r.stderr
 
 
+def test_explicitly_selected_missing_box_config_refuses_launch(w):
+    missing = w.tmp / "missing-config.toml"
+    r = w.zamu("launch", "app-decisions", env={"ZAMU_CONFIG": str(missing)}, check=False)
+    assert r.returncode == 2
+    assert "selected box config is missing" in r.stderr
+
+
+def test_show_reports_invalid_box_config_encoding_as_a_coded_error(w):
+    bad = w.tmp / "invalid-encoding.toml"
+    bad.write_bytes(b"\xff")
+    r = w.zamu("show", "app-decisions", env={"ZAMU_CONFIG": str(bad)}, check=False)
+    assert r.returncode == 2
+    assert "could not decode box config" in r.stderr
+    assert "Traceback" not in r.stderr
+
+
 def test_an_item_naming_an_unknown_engine_is_refused_at_launch(w):
     p = w.plan_dir / "plan.toml"
     p.write_text(p.read_text().replace('[items.app-decisions]\n',

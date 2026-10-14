@@ -22,7 +22,7 @@ def test_dashboard_scopes_detail_but_counts_other_plans(tmp_path):
     world = World(now=lambda: NOW, scan=lambda: [], run=lambda argv: (0, "active", ""))
     data = portfolio.snapshot(Config(), world, dashboard=True, claude_projects=tmp_path / "none", codex_sessions=tmp_path / "none")
     out = portfolio.dashboard(data, "alpha")
-    assert "alpha/decide Q-ONE" in out and "me:alpha-prj" in out
+    assert "alpha/decide Q-ONE" in out and "Ship? — ?" in out
     assert "beta: 1 ready; PM ?; 1 waiting on Daniel" in out
     assert "beta/decide Q-ONE" not in out
     assert "beta/decide Q-ONE" in portfolio.dashboard(data, None)
@@ -36,6 +36,28 @@ def test_dashboard_ranks_waits_by_unblocked_items_then_id():
                 {"id": "alpha/a", "ask": "Q-A", "unblocks": 3, "text": "High A", "window": "me:alpha-prj"}]}
     out = portfolio.dashboard(data, "alpha")
     assert out.index("alpha/a Q-A") < out.index("alpha/b Q-B") < out.index("alpha/z Q-Z")
+
+
+def test_dashboard_uses_attached_pm_pane_and_recorded_target(tmp_path):
+    d = config.plans_dir() / "alpha"
+    d.mkdir(parents=True)
+    (d / "plan.toml").write_text('[items.decide]\nkind="decision"\ntitle="Choose"\nquestion="Ship?"\n')
+    (d / "state.json").write_text(json.dumps({"items": {"decide": {"ask": "Q-ONE"}},
+                                           "pm": {"pane": "%147", "tmux_session": "bakobo", "target": "imbu-prj"}}))
+
+    def run(argv):
+        if argv[:2] == ["tmux", "display-message"]:
+            assert argv[-2:] == ["%147", "#{session_name}:#{window_name}"]
+            return 0, "bakobo:renamed-prj\n", ""
+        return 1, "", "unavailable"
+
+    world = World(now=lambda: NOW, scan=lambda: [], run=run)
+    data = portfolio.snapshot(Config(), world, dashboard=True, claude_projects=tmp_path / "none", codex_sessions=tmp_path / "none")
+    assert "Q-ONE (+0) Ship? — bakobo:renamed-prj" in portfolio.dashboard(data, "alpha")
+
+    missing = World(now=lambda: NOW, scan=lambda: [], run=lambda argv: (1, "", "gone"))
+    data = portfolio.snapshot(Config(), missing, dashboard=True, claude_projects=tmp_path / "none", codex_sessions=tmp_path / "none")
+    assert "Q-ONE (+0) Ship? — bakobo:imbu-prj" in portfolio.dashboard(data, "alpha")
 
 
 def test_dashboard_shows_worker_git_pr_ci_and_named_window(tmp_path):
@@ -60,8 +82,10 @@ def test_dashboard_shows_worker_git_pr_ci_and_named_window(tmp_path):
                 return 0, "abc123\n", ""
             if "rev-list" in argv:
                 return 0, "3\n", ""
-            if "status" in argv:
-                return 0, " M a.py\n?? b.py\n", ""
+            if "diff" in argv:
+                return 0, "a.py\0", ""
+            if "ls-files" in argv:
+                return 0, "b.py\0", ""
         if argv[:2] == ["gh", "pr"]:
             return 0, json.dumps([{"url": "https://github.com/owner/repo/pull/7", "state": "OPEN", "statusCheckRollup": [{"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "SUCCESS"}]}]), ""
         if argv[:2] == ["tmux", "display-message"]:
@@ -98,6 +122,41 @@ def test_dashboard_marks_unreadable_progress_unknown(tmp_path):
     data = portfolio.snapshot(Config(), World(now=lambda: NOW, scan=lambda: [], run=lambda argv: (1, "", "no repo")), dashboard=True, claude_projects=tmp_path / "none", codex_sessions=tmp_path / "none")
     out = portfolio.dashboard(data, "alpha")
     assert "commits ?" in out and "files ?" in out and "PR ?" in out
+
+
+def test_dashboard_counts_committed_and_uncommitted_files_and_failed_diff_is_unknown(tmp_path):
+    d = config.plans_dir() / "alpha"
+    d.mkdir(parents=True)
+    (d / "plan.toml").write_text('[items.work]\nkind="build"\ntitle="Work"\nrepo="/repo"\noracle="manual"\n')
+    (d / "state.json").write_text(json.dumps({"items": {"work": {"state": "running", "wid": "work", "worker": "live", "worktree": "/repo/.worktrees/work"}}}))
+
+    def run(argv):
+        if "symbolic-ref" in argv:
+            return 0, "origin/main\n" if "refs/remotes/origin/HEAD" in argv else "work\n", ""
+        if "merge-base" in argv:
+            return 0, "fork\n", ""
+        if "rev-list" in argv:
+            return 0, "2\n", ""
+        if "diff" in argv:
+            return 0, "committed.py\0modified.py\0", ""
+        if "ls-files" in argv:
+            return 0, "new.py\0", ""
+        return 1, "", "unavailable"
+
+    world = World(now=lambda: NOW, scan=lambda: [], run=run)
+    data = portfolio.snapshot(Config(), world, dashboard=True, claude_projects=tmp_path / "none", codex_sessions=tmp_path / "none")
+    assert "2 commits, 3 files" in portfolio.dashboard(data, "alpha")
+
+    def failed_diff(argv):
+        if "diff" in argv:
+            return 1, "", "cannot read"
+        if "ls-files" in argv:
+            return 0, "", ""
+        return run(argv)
+
+    data = portfolio.snapshot(Config(), World(now=lambda: NOW, scan=lambda: [], run=failed_diff), dashboard=True,
+                              claude_projects=tmp_path / "none", codex_sessions=tmp_path / "none")
+    assert "2 commits, files ?" in portfolio.dashboard(data, "alpha")
 
 
 def test_dashboard_reads_actual_model_from_claude_log(tmp_path):
@@ -149,7 +208,56 @@ def test_dashboard_progress_against_real_git_and_fake_gh(tmp_path):
 
     data = portfolio.snapshot(Config(), World(now=lambda: NOW, scan=lambda: [], run=run), dashboard=True, claude_projects=tmp_path / "none", codex_sessions=tmp_path / "none")
     out = portfolio.dashboard(data, "alpha")
-    assert "1 commit, 1 file; PR none" in out
+    assert "1 commit, 2 files; PR none" in out
+
+
+def test_dashboard_landed_uses_review_report_for_non_pr_oracle(tmp_path):
+    d = config.plans_dir() / "alpha"
+    d.mkdir(parents=True)
+    (d / "plan.toml").write_text('[items.work]\nkind="build"\ntitle="Work"\nrepo="/repo"\noracle="cmd:true"\n')
+    (d / "state.json").write_text(json.dumps({"items": {"work": {"state": "done", "last_line": "Landed"}}}))
+    (d / "events.jsonl").write_text("\n".join(json.dumps(e) for e in [
+        {"t": "2026-10-13T23:00:00+00:00", "item": "work", "what": "report", "state": "review", "line": "https://github.com/owner/repo/pull/38"},
+        {"t": NOW.isoformat(), "item": "work", "what": "oracle", "ok": True},
+    ]) + "\n")
+    world = World(now=lambda: NOW, scan=lambda: [], run=lambda argv: (1, "", "unavailable"))
+    data = portfolio.snapshot(Config(), world, dashboard=True, claude_projects=tmp_path / "none", codex_sessions=tmp_path / "none")
+    assert "alpha/work https://github.com/owner/repo/pull/38" in portfolio.dashboard(data, "alpha")
+
+
+def test_dashboard_landed_uses_merged_topic_when_no_pr_report(tmp_path):
+    d = config.plans_dir() / "alpha"
+    d.mkdir(parents=True)
+    (d / "plan.toml").write_text('[items.work]\nkind="build"\ntitle="Work"\nrepo="/repo"\noracle="cmd:true"\n')
+    (d / "state.json").write_text(json.dumps({"items": {"work": {"state": "done"}}}))
+    (d / "events.jsonl").write_text(json.dumps({"t": NOW.isoformat(), "item": "work", "what": "oracle", "ok": True}) + "\n")
+
+    calls = []
+
+    def run(argv):
+        calls.append(argv)
+        if "symbolic-ref" in argv:
+            return 1, "", "origin HEAD unset"
+        if "rev-parse" in argv:
+            return 0, "abcdef123456\n", ""
+        if "--is-ancestor" in argv:
+            return 0, "", ""
+        return 1, "", "unavailable"
+
+    data = portfolio.snapshot(Config(), World(now=lambda: NOW, scan=lambda: [], run=run), dashboard=True,
+                              claude_projects=tmp_path / "none", codex_sessions=tmp_path / "none")
+    assert "alpha/work abcdef1" in portfolio.dashboard(data, "alpha")
+    assert any("--is-ancestor" in argv for argv in calls)
+    assert any("refs/remotes/origin/main" in argv for argv in calls)
+
+    def unmerged(argv):
+        if "--is-ancestor" in argv:
+            return 1, "", "not merged"
+        return run(argv)
+
+    data = portfolio.snapshot(Config(), World(now=lambda: NOW, scan=lambda: [], run=unmerged), dashboard=True,
+                              claude_projects=tmp_path / "none", codex_sessions=tmp_path / "none")
+    assert "alpha/work ?" in portfolio.dashboard(data, "alpha")
 
 
 def test_dashboard_does_not_call_unreadable_events_empty(tmp_path):

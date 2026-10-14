@@ -200,14 +200,31 @@ def _window(doc: dict, name: str) -> str:
     return f"{session}:{name}"
 
 
-def _worker_window(doc: dict, it, rec: dict, world: World, cache: dict[str, str]) -> str:
-    pane = rec.get("pane") or ""
+def _pane_window(pane: str, world: World, cache: dict[str, str]) -> str:
     if pane and pane not in cache:
         found = _look(world, ["tmux", "display-message", "-p", "-t", pane,
                               "#{session_name}:#{window_name}"])
         cache[pane] = found if found and re.fullmatch(r"[^:\n]+:[^:\n]+", found) else "?"
-    if pane and cache[pane] != "?":
-        return cache[pane]
+    return cache.get(pane, "?")
+
+
+def _pm_window(doc: dict, world: World, cache: dict[str, str]) -> str:
+    pm = doc.get("pm", {})
+    live = _pane_window(pm.get("pane") or "", world, cache)
+    if live != "?":
+        return live
+    target = pm.get("target") or ""
+    if not target:
+        return "?"
+    session = pm.get("tmux_session") or ""
+    return f"{session}:{target}" if session and ":" not in target and not target.startswith("%") else target
+
+
+def _worker_window(doc: dict, it, rec: dict, world: World, cache: dict[str, str]) -> str:
+    pane = rec.get("pane") or ""
+    live = _pane_window(pane, world, cache)
+    if live != "?":
+        return live
     return _window(doc, it.topic) if rec.get("ours") else "?"
 
 
@@ -225,6 +242,17 @@ def _repo_slug(remote: str | None) -> str | None:
         return None
     match = re.fullmatch(r"(?:https://|ssh://git@|git@)github\.com[:/]([^/\s]+/[^/\s]+?)(?:\.git)?/?", remote)
     return match.group(1) if match else None
+
+
+def _origin_default(world: World, repo: str) -> str | None:
+    ref = _look(world, ["git", "-C", repo, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"])
+    if ref and ref.startswith("origin/"):
+        return ref
+    for name in ("main", "master"):
+        ref = f"refs/remotes/origin/{name}"
+        if _look(world, ["git", "-C", repo, "rev-parse", "--verify", "--quiet", ref]):
+            return f"origin/{name}"
+    return None
 
 
 def _ci(checks: Any) -> str:
@@ -307,13 +335,15 @@ def _worker_detail(plan: Plan, it, rec: dict, doc: dict, cfg: Config, world: Wor
                    now: dt.datetime, log_model: str | None, windows: dict[str, str]) -> dict:
     worktree = rec.get("worktree") or f"{it.repo.rstrip('/')}/.worktrees/{it.topic}"
     branch = _look(world, ["git", "-C", worktree, "symbolic-ref", "--short", "HEAD"])
-    base = it.base or _look(world, ["git", "-C", worktree, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"])
+    base = it.base or _origin_default(world, worktree)
     if base and not base.startswith("origin/"):
         base = "origin/" + base
     fork = _look(world, ["git", "-C", worktree, "merge-base", "HEAD", base]) if base else None
     commits = _look(world, ["git", "-C", worktree, "rev-list", "--count", f"{fork}..HEAD"]) if fork else None
-    porcelain = _look(world, ["git", "-C", worktree, "status", "--porcelain", "--untracked-files=normal"])
-    files = len(porcelain.splitlines()) if porcelain is not None else None
+    changed = _look(world, ["git", "-C", worktree, "diff", "--name-only", "-z", fork, "--"]) if fork else None
+    untracked = _look(world, ["git", "-C", worktree, "ls-files", "--others", "--exclude-standard", "-z"])
+    files = (len((set(changed.split("\0")) | set(untracked.split("\0"))) - {""})
+             if changed is not None and untracked is not None else None)
     pr, pr_state, ci = _pr(world, worktree, branch or it.topic)
     launched = engine._parse(rec.get("launched", ""))
     age_hours = max(0, int((now - launched).total_seconds() // 3600)) if launched else None
@@ -348,10 +378,24 @@ def _landed(plan: Plan, doc: dict, sts: dict[str, str], now: dt.datetime, world:
         rec = doc.get("items", {}).get(iid, {})
         reference = next((f"https://github.com/{spec[3:].replace('#', '/pull/')}" for spec in it.oracle if spec.startswith("pr:")), "")
         if not reference:
-            match = re.search(r"https://\S+/pull/\d+", rec.get("last_line", ""))
-            reference = match.group(0) if match else ""
+            reports = (ev.get("line", "") for ev in reversed(events)
+                       if ev.get("item") == iid and ev.get("what") == "report" and ev.get("state") == "review")
+            for line in (rec.get("last_line", ""), *reports):
+                match = re.search(r"https://[^\s)]+/pull/\d+", line)
+                if match:
+                    reference = match.group(0)
+                    break
         if not reference and it.repo:
-            reference = _look(world, ["git", "-C", it.repo, "rev-parse", "--short", it.topic]) or ""
+            default = _origin_default(world, it.repo)
+            branch = (_look(world, ["git", "-C", it.repo, "rev-parse", "--verify", f"refs/heads/{it.topic}"])
+                      or _look(world, ["git", "-C", it.repo, "rev-parse", "--verify", f"refs/remotes/origin/{it.topic}"]))
+            if default and branch:
+                try:
+                    rc, _, _ = world.run(["git", "-C", it.repo, "merge-base", "--is-ancestor", branch, default])
+                except (OSError, ValueError, subprocess.TimeoutExpired):
+                    rc = None
+                if rc == 0:
+                    reference = branch[:7]
         out.append({"id": f"{plan.name}/{iid}", "reference": reference or "?"})
     return out
 
@@ -448,7 +492,7 @@ def snapshot(cfg: Config, world: World, *, claude_projects: Path | None = None,
             if text:
                 destination = (_worker_window(doc, it, rec, world, windows) if dashboard and
                                (rec.get("wid") or rec.get("pane") or rec.get("session")) and rec.get("worker") != "dead"
-                               else _window(doc, f"{plan.name}-prj"))
+                               else _pm_window(doc, world, windows) if dashboard else _window(doc, f"{plan.name}-prj"))
                 waits.append({"id": f"{plan.name}/{iid}", "ask": ask, "text": text,
                               "unblocks": _descendants(plan, sts, iid),
                               "window": destination})
@@ -464,12 +508,12 @@ def snapshot(cfg: Config, world: World, *, claude_projects: Path | None = None,
                     held.update(_downstream(plan, sts, iid))
             waits.append({"id": f"{plan.name}/budget", "ask": episode["ask"],
                           "text": episode.get("line") or "Choose a budget trade-off",
-                          "unblocks": len(held), "window": _window(doc, f"{plan.name}-prj")})
+                          "unblocks": len(held), "window": _pm_window(doc, world, windows) if dashboard else _window(doc, f"{plan.name}-prj")})
         if pm_ask := doc.get("pm", {}).get("dead_ask"):
             waits.append({"id": f"{plan.name}/pm", "ask": pm_ask,
                           "text": f"Restart the {plan.name} PM",
                           "unblocks": sum(st not in graph.FINAL for st in sts.values()),
-                          "window": _window(doc, f"{plan.name}-prj")})
+                          "window": _pm_window(doc, world, windows) if dashboard else _window(doc, f"{plan.name}-prj")})
         risk = graph.risks(plan, sts, now.date())
         if dashboard:
             for r in risk:

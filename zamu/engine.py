@@ -448,6 +448,7 @@ def pulse(plan: Plan, plan_dir: Path, cfg: Config, world: World,
 
         changes += _pins(plan, plan_dir, doc, pin_values, now)
         _ready_since(plan, doc, graph.states(plan, doc), now)
+        _record_nags(plan, plan_dir, doc, now)
         if cfg.escalate == "session-coord":
             changes += _escalate(plan, plan_dir, doc, sts, world, now)
         _quiet_panes(plan, doc, sts, world)
@@ -458,6 +459,7 @@ def pulse(plan: Plan, plan_dir: Path, cfg: Config, world: World,
             doc.pop("admission", None)
         if cfg.budgets:
             changes += _budget_episode(plan, plan_dir, doc, cfg, world, now, budget_readings)
+        _record_launch_holds(plan, plan_dir, doc, cfg, budget_readings, now)
         changes += _leftovers(plan, plan_dir, doc, graph.states(plan, doc), cfg, world, now)
         pm = dict(doc.get("pm", {}))
     for outcome, line in messages:
@@ -687,6 +689,45 @@ def _ready_since(plan: Plan, doc: dict[str, Any], sts: dict[str, str], now: dt.d
             rec.setdefault("ready_since", _iso(now))
         elif rec is not None:
             rec.pop("ready_since", None)
+
+
+def _record_nags(plan: Plan, plan_dir: Path, doc: dict[str, Any], now: dt.datetime) -> None:
+    sts = graph.states(plan, doc)
+    for iid, it in plan.items.items():
+        rec = doc["items"].get(iid, {})
+        since = rec.get("ready_since", "")
+        if sts[iid] in graph.FINAL or not it.nag_after_days or not since:
+            rec.pop("nagged_for", None)
+        elif waited_days(doc, iid, now) > it.nag_after_days and rec.get("nagged_for") != since:
+            rec["nagged_for"] = since
+            _event(plan_dir, now, iid, "wait_nag", ready_since=since)
+
+
+def _record_launch_holds(plan: Plan, plan_dir: Path, doc: dict[str, Any], cfg: Config,
+                         readings: dict, now: dt.datetime) -> None:
+    ready = set(graph.launchable(plan, graph.states(plan, doc)))
+    wanted = set()
+    if doc.get("admission", {}).get("ok") is False:
+        load = engine_load(plan, doc)
+        wanted.update((iid, "admission") for iid in ready
+                      if any(e in cfg.engines and (e not in cfg.engine_caps or
+                             load.get(e, 0) < cfg.engine_caps[e])
+                             for e in plan.items[iid].engines))
+    else:
+        wanted.update((iid, "budget") for iid in budget_waiting(plan, doc, cfg, readings))
+    prior = {(iid, reason) for iid, reasons in doc.get("friction_holds", {}).items()
+             for reason in reasons}
+    for iid, reason in sorted(wanted - prior):
+        _event(plan_dir, now, iid, "launch_hold", reason=reason, state="start")
+    for iid, reason in sorted(prior - wanted):
+        _event(plan_dir, now, iid, "launch_hold", reason=reason, state="end")
+    holds: dict[str, list[str]] = {}
+    for iid, reason in sorted(wanted):
+        holds.setdefault(iid, []).append(reason)
+    if holds:
+        doc["friction_holds"] = holds
+    else:
+        doc.pop("friction_holds", None)
 
 
 def budget_waiting(plan: Plan, doc: dict[str, Any], cfg: Config, readings: dict) -> list[str]:
@@ -1297,7 +1338,8 @@ def worker_retire(plan: Plan, plan_dir: Path, world: World, wid: str) -> str:
     return f"worker {wid} retired; {', '.join(actions) if actions else 'registry closed'}; branch kept"
 
 
-def assign(plan: Plan, plan_dir: Path, world: World, iid: str, wid: str, note: str = "") -> str:
+def assign(plan: Plan, plan_dir: Path, world: World, iid: str, wid: str, note: str = "",
+           *, adopted: bool = False) -> str:
     """Give an item to a registered worker. zamu records it; the PM delivers the brief,
     because how to reach a worker depends on what it is."""
     it = plan.items.get(iid)
@@ -1341,6 +1383,9 @@ def assign(plan: Plan, plan_dir: Path, world: World, iid: str, wid: str, note: s
         if iid not in w["items"]:
             w["items"].append(iid)
         _event(plan_dir, now, iid, "assign", wid=wid, note=note)
+        if adopted:
+            _event(plan_dir, now, iid, "adopt", wid=wid, session=w.get("session", ""),
+                   pane=w.get("pane", ""))
     msg = f"{iid} assigned to {wid} ({w.get('engine', '?')})"
     if not Path(rec["worktree"]).is_dir():
         msg += (f"\nwarning: {rec['worktree']} does not exist yet. A relaunch would create it "
@@ -1371,7 +1416,7 @@ def adopt(plan: Plan, plan_dir: Path, world: World, iid: str, session: str, pane
                           f"{rec.get('worker', 'unchecked')}); `zamu mark {iid} reset` first "
                           "if that one is gone.")
     worker_add(plan_dir, world, wid, engine, session, pane, wt, note)
-    out = assign(plan, plan_dir, world, iid, wid, note or "adopted")
+    out = assign(plan, plan_dir, world, iid, wid, note or "adopted", adopted=True)
     return out.replace(f"{iid} assigned to", f"{iid} adopted: worker", 1) + \
         (f", session {session}" if session else "") + (f", pane {pane}" if pane else "")
 
@@ -1380,7 +1425,7 @@ def adopt(plan: Plan, plan_dir: Path, world: World, iid: str, session: str, pane
 
 def _apply_report(plan: Plan, plan_dir: Path, doc: dict[str, Any], iid: str, state: str,
                   line: str, now: dt.datetime, verdict: oracles.Verdict | None,
-                  evidence: str = "") -> str:
+                  evidence: str = "", pane: str = "") -> str:
     """Apply a command or file report while the plan transaction is held."""
     it = plan.items[iid]
     rec = _rec(doc, iid)
@@ -1412,7 +1457,7 @@ def _apply_report(plan: Plan, plan_dir: Path, doc: dict[str, Any], iid: str, sta
     if evidence:
         _add_evidence(doc, rec, evidence, "worker report", now)
     _event(plan_dir, now, iid, "report", state=state, line=line, outcome=outcome,
-           **({"evidence": evidence} if evidence else {}))
+           pane=pane, **({"evidence": evidence} if evidence else {}))
     return outcome
 
 
@@ -1439,7 +1484,8 @@ def report(plan: Plan, plan_dir: Path, world: World, iid: str, state: str, line:
         cwd = it.repo if it.repo and Path(it.repo).is_dir() else str(plan_dir)
         verdict = oracles.check(it.oracle, cwd, world.oracle_run)
     with store.transaction(plan_dir) as doc:
-        outcome = _apply_report(plan, plan_dir, doc, iid, state, line, now, verdict, evidence)
+        outcome = _apply_report(plan, plan_dir, doc, iid, state, line, now, verdict, evidence,
+                                world.pane())
         pm = dict(doc.get("pm", {}))
     if state in ("review", "done") + FLAGS:
         _message_pm(pm, world, plan.name, outcome, line)

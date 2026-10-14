@@ -9,7 +9,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
-from . import budget_probes, budgets, config, engine, graph, procs, store
+from . import budget_probes, budgets, config, engine, feedback, friction, graph, procs, store
 from .config import Config
 from .engine import World
 from .plan import Plan, PlanError, load
@@ -195,11 +195,12 @@ def _claude_settings() -> tuple[Path, dict | None]:
 def snapshot(cfg: Config, world: World, *, claude_projects: Path | None = None,
              codex_sessions: Path | None = None, claude_factors: dict | None = None) -> dict[str, Any]:
     now = world.now()
-    entries, errors, unparsed = [], [], []
+    entries, errors, unparsed, plan_dirs = [], [], [], []
     root = config.plans_dir()
     for d in sorted(root.iterdir()) if root.is_dir() else []:
         if not (d / "plan.toml").exists():
             continue
+        plan_dirs.append(d)
         try:
             plan = load(d / "plan.toml", name=d.name)
             doc = store.read(d)
@@ -325,10 +326,15 @@ def snapshot(cfg: Config, world: World, *, claude_projects: Path | None = None,
     extra = {(name, rec.get("wid") or rec.get("session") or rec.get("pane")):
              rec.get("engine") or "claude" for name, rec in unparsed}
     workers = dict(Counter([w["engine"] for _p, w in all_workers] + list(extra.values())))
+    friction_data = friction.totals(plan_dirs, now)
+    try:
+        friction_data["feedback"] = feedback.list_feedback(limit=3)
+    except (store.StoreError, OSError, TimeoutError):
+        friction_data["feedback"] = None
     return {"box": {"workers": workers, "used": len(all_workers) + len(extra), "cap": cfg.max_workers,
                     "engine_caps": cfg.engine_caps, "admission": admission, "admission_why": why,
                     "budgets": readings, "watcher": watcher}, "plans": plans, "waiting": waits,
-            "conflicts": conflicts, "errors": errors}
+            "conflicts": conflicts, "errors": errors, "friction": friction_data}
 
 
 def board(data: dict[str, Any]) -> str:
@@ -359,5 +365,20 @@ def board(data: dict[str, Any]) -> str:
         lines.append("waiting: " + "; ".join(f"{w['id']} {w['ask'] or '-'} (+{w['unblocks']}) {short(w['text'])}" for w in data["waiting"]))
     if data["conflicts"]:
         lines.append("conflicts: " + "; ".join(f"{c['kind']} {c.get('pin') or c['repo']}: {','.join(c['items'])}" for c in data["conflicts"]))
+    if fr := data.get("friction"):
+        labels = {"adopted": "adopted", "revived": "revived", "admission_holds": "admission holds",
+                  "admission_hours": "admission hours", "budget_holds": "budget holds",
+                  "budget_hours": "budget hours", "nagged_waits": "past nag", "pm_reports": "PM reports",
+                  "verify_reopens": "verify reopens"}
+        current, previous = fr["this_week"], fr["previous_week"]
+        counts = [f"{label} {current[key]:g} ({current[key] - previous[key]:+g})"
+                  for key, label in labels.items() if current[key] or previous[key]]
+        lines.append("friction this week: " + ("; ".join(counts) if counts else "none") +
+                     ("; event log ?" if fr["unknown"] else ""))
+        if fr["feedback"] is None:
+            lines.append("feedback: ?")
+        for row in fr["feedback"] or []:
+            text = " ".join(row.get("text", "").split())
+            lines.append(f"feedback {row['t'][:10]} {row.get('plan') or '-'}: {text[:90]}{'…' if len(text) > 90 else ''}")
     lines.extend(f"{e['name']}: could not load ({e['error']})" for e in data["errors"])
     return "\n".join(lines) + "\n"

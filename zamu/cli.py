@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import json
 import os
 import subprocess
@@ -242,6 +243,40 @@ def cmd_portfolio(args) -> int:
     w.scan = procs.sample_cpu
     data = portfolio.snapshot(config.load(), w)
     print(json.dumps(data, indent=1, default=str) if args.json else portfolio.board(data), end="" if not args.json else "\n")
+    return 0
+
+
+def cmd_feedback(args) -> int:
+    from . import feedback
+    if args.list:
+        since = None
+        if args.since:
+            try:
+                since = dt.datetime.fromisoformat(args.since)
+                if since.tzinfo is None:
+                    since = since.replace(tzinfo=dt.timezone.utc)
+            except ValueError:
+                raise ConfigError("--since must be an ISO date or datetime") from None
+        for row in feedback.list_feedback(since):
+            who = row.get("name") or row.get("pane") or "?"
+            print(f"{row['t']} {row.get('plan') or '-'} {who}: {row.get('text', '')}")
+    else:
+        if not args.plan or not args.text or not args.text.strip():
+            raise ConfigError("feedback needs --plan <plan> and text, or --list")
+        pane = os.environ.get("TMUX_PANE", "")
+        name = os.environ.get("ZAMU_SESSION_NAME") or os.environ.get("CLAUDE_SESSION_NAME", "")
+        if not name and pane:
+            try:
+                result = subprocess.run(["tmux", "display-message", "-p", "-t", pane,
+                                         "#{window_name}"], capture_output=True, text=True,
+                                        timeout=5)
+                if result.returncode == 0:
+                    name = result.stdout.strip()
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+        feedback.add(args.plan, args.text, dt.datetime.now(dt.timezone.utc),
+                     pane=pane, name=name)
+        print("feedback recorded")
     return 0
 
 
@@ -522,6 +557,12 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("portfolio", help="one compact board across all plans")
     s.add_argument("--json", action="store_true")
     s.set_defaults(func=cmd_portfolio)
+    s = sub.add_parser("feedback", help="record or list field observations")
+    s.add_argument("--plan", help="plan related to this observation")
+    s.add_argument("--list", action="store_true", help="list feedback")
+    s.add_argument("--since", help="show feedback since an ISO date or datetime")
+    s.add_argument("text", nargs="?", help="observation to record")
+    s.set_defaults(func=cmd_feedback)
     s = sub.add_parser("pulse", help="check oracles and workers, escalate, then print the board")
     plan_arg(s)
     s.set_defaults(func=cmd_pulse)

@@ -120,6 +120,8 @@ def load() -> Config:
         doc = tomllib.loads(p.read_text())
     except FileNotFoundError:
         doc = {}
+    except OSError as e:
+        raise ConfigError(f"{p}: could not read box config: {e}") from None
     except tomllib.TOMLDecodeError as e:
         raise ConfigError(f"{p}: not valid TOML: {e}") from None
     known = set(Config.__dataclass_fields__)

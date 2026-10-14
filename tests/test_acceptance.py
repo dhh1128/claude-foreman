@@ -631,6 +631,13 @@ def test_tier_without_box_mapping_refuses_launch_but_explicit_model_works(w):
     assert " --model fable " in w.zamu("launch", "app-decisions").stdout
 
 
+def test_show_reports_unreadable_box_config_as_a_coded_error(w):
+    r = w.zamu("show", "app-decisions", env={"ZAMU_CONFIG": str(w.tmp)}, check=False)
+    assert r.returncode == 2
+    assert "could not read box config" in r.stderr
+    assert "Traceback" not in r.stderr
+
+
 def test_an_item_naming_an_unknown_engine_is_refused_at_launch(w):
     p = w.plan_dir / "plan.toml"
     p.write_text(p.read_text().replace('[items.app-decisions]\n',

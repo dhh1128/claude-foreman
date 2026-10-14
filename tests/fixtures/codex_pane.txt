@@ -1,0 +1,18 @@
+• Ran tmux display-message -p -t "$TMUX_PANE" '#{pane_id} #{pane_current_command} #{pane_height} #{pa…
+  └
+      GPT-6-Sol high · ~/code/me/claude-zamu/.worktrees/quiet-quote · Read quiet-quote briefs
+      ? for shortcuts                                                           ⚠ 2 warnings · f2 to …
+    + 52 lines (^t to expand)
+
+• The visible capture from my Codex pane shows the › input line, a • Working (...) line, the model and
+  path footer, and the shortcuts line. I’ll keep a cropped capture as the regression fixture and test
+  that historical prompts preserve output below them.
+
+• Working (35s • esc to interrupt)
+  └ Tip: Paste an image with Ctrl+V to attach it to your next message.
+
+
+› Ask Codex to do anything
+
+  GPT-6-Sol high · ~/code/me/claude-zamu/.worktrees/quiet-quote · Read quiet-quote briefs
+  ? for shortcuts                                                           ⚠ 2 warnings · f2 to view

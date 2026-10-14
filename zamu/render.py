@@ -251,9 +251,10 @@ def show(plan: Plan, doc: dict[str, Any], iid: str, events: list[dict[str, Any]]
     if it.repo:
         lines.append(f"  repo {it.repo}  topic {it.topic}")
     if it.kind == "build":
-        lines.append(f"  engine {r.get('engine') or ', '.join(it.engines)}")
-        if "model" in r:
-            lines.append(f"  tier {r.get('tier') or 'default'}, model {r['model'] or 'default'}"
+        current_launch = st in graph.ACTIVE and r.get("worker") != "dead"
+        lines.append(f"  engine {r.get('engine') if current_launch and r.get('engine') else ', '.join(it.engines)}")
+        if current_launch:
+            lines.append(f"  tier {r.get('tier') or 'default'}, model {r.get('model') or 'default'}"
                          + (f", reasoning {r['reasoning_effort']}" if r.get('reasoning_effort') else ""))
         elif cfg is not None:
             for name in it.engines:

@@ -7,7 +7,7 @@ import pytest
 
 from zamu import budgets, engine, render, store
 from zamu import config
-from zamu.config import Config
+from zamu.config import Config, ModelSpec
 from zamu.plan import parse
 
 
@@ -107,6 +107,36 @@ def test_relaunch_keeps_recorded_model_when_box_mapping_changes(tmp_path, monkey
     (launch,) = engine.prepare(plan, tmp_path, cfg, engine.World(), ['a'], relaunch=True)
     assert (launch.tier, launch.model) == ('deep', 'fable')
     assert ('--model', 'fable') in [s.argv[i:i + 2] for s in launch.steps for i in range(len(s.argv))]
+
+
+def test_relaunch_of_pre_model_worker_keeps_engine_default(tmp_path, monkeypatch):
+    plan = parse('[items.a]\ntitle="A"\nkind="build"\nrepo="/r"\n'
+                 'oracle="manual"\ntier="deep"\n', tmp_path / 'plan.toml')
+    cfg = Config(models={'claude': {'deep': ModelSpec('fable')}})
+    with store.transaction(tmp_path) as doc:
+        doc['items']['a'] = {'state': 'running', 'worker': 'dead', 'session': 's1',
+                             'engine': 'claude', 'worktree': '/r/.worktrees/a'}
+    monkeypatch.setattr('zamu.launch.worktree_exists', lambda p: True)
+    (launch,) = engine.prepare(plan, tmp_path, cfg, engine.World(), ['a'], relaunch=True)
+    assert (launch.tier, launch.model) == ('', '')
+    assert '--model' not in launch.steps[-1].argv
+
+
+def test_show_uses_planned_model_after_launch_is_no_longer_live(tmp_path):
+    plan = parse('[items.a]\ntitle="A"\nkind="build"\nrepo="/r"\n'
+                 'oracle="manual"\ntier="deep"\n', tmp_path / 'plan.toml')
+    cfg = Config(models={'claude': {'deep': ModelSpec('fable')}})
+    rec = {'state': 'done', 'worker': 'dead', 'engine': 'claude', 'tier': 'light',
+           'model': 'sonnet', 'reasoning_effort': ''}
+    doc = {'items': {'a': rec}}
+    assert 'tier deep, model fable' in render.show(plan, doc, 'a', [], cfg)
+    rec.update(state='running', worker='live')
+    assert 'tier light, model sonnet' in render.show(plan, doc, 'a', [], cfg)
+    rec['worker'] = 'dead'
+    assert 'tier deep, model fable' in render.show(plan, doc, 'a', [], cfg)
+    rec.clear()
+    rec.update(state='running', worker='live', engine='claude')  # pre-feature live launch
+    assert 'tier default, model default' in render.show(plan, doc, 'a', [], cfg)
 
 
 def test_cap_holder_is_named_on_board_and_launch(tmp_path):

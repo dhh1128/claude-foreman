@@ -1075,8 +1075,10 @@ def prepare(plan: Plan, plan_dir: Path, cfg: Config, world: World, ids: list[str
                               f"known: {', '.join(sorted(cfg.engines))}. Add it under [engines].")
         if relaunch and selected != "claude":
             session = None  # only claude can resume a conversation; others start over
-        saved = rec if relaunch and "model" in rec else None
-        spec = (ModelSpec(rec.get("model", ""), rec.get("reasoning_effort", "")) if saved else
+        # An older launch has no model fields: it started on the engine default and must
+        # resume there even if the item acquired a tier while dead or parked.
+        spec = (ModelSpec(rec.get("model", ""), rec.get("reasoning_effort", ""))
+                if relaunch or parked else
                 cfg.model_for(selected, it.tier, it.model))
         out.append(launch_mod.plan_launch(
             plan, it, tmux_session=cfg.tmux_session or world.tmux_session(),
@@ -1085,7 +1087,7 @@ def prepare(plan: Plan, plan_dir: Path, cfg: Config, world: World, ids: list[str
             branch_exists=False if exists else launch_mod.branch_exists(it.repo, it.topic, world.run),
             session=session, worktree=kept, changed=changed, parked=parked,
             model=spec.model, reasoning_effort=spec.reasoning_effort,
-            tier=rec.get("tier", it.tier) if saved else it.tier))
+            tier=rec.get("tier", "") if relaunch or parked else it.tier))
     return out
 
 

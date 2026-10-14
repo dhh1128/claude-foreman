@@ -181,7 +181,7 @@ def _claude_settings() -> tuple[Path, dict | None]:
         doc = tomllib.loads(path.read_text())
     except FileNotFoundError:
         doc = {}
-    except (OSError, ValueError, subprocess.TimeoutExpired):
+    except (OSError, ValueError):
         return Path("~/.claude/projects").expanduser(), None
     projects = doc.get("projects", "~/.claude/projects")
     if not isinstance(projects, str):
@@ -215,7 +215,7 @@ def _look(world: World, argv: list[str]) -> str | None:
     """A command's output, or None when the world could not be inspected."""
     try:
         rc, out, _ = world.run(argv)
-    except (OSError, ValueError):
+    except (OSError, ValueError, subprocess.TimeoutExpired):
         return None
     return out.strip() if rc == 0 else None
 

@@ -162,6 +162,13 @@ def test_dashboard_does_not_call_unreadable_events_empty(tmp_path):
     assert "alpha: completion events unreadable" in portfolio.dashboard(data, "alpha")
 
 
+def test_dashboard_probe_timeout_is_unknown():
+    def timeout(argv):
+        raise subprocess.TimeoutExpired(argv, 1)
+
+    assert portfolio._look(World(run=timeout), ["git", "status"]) is None
+
+
 def test_dashboard_uses_actual_tmux_window_name_for_adopted_worker(tmp_path):
     d = config.plans_dir() / "alpha"
     d.mkdir(parents=True)

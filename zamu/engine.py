@@ -1335,7 +1335,7 @@ def commit_pm(plan: Plan, plan_dir: Path, cfg: Config, world: World,
         if (pm.get("target", ""), pm.get("status", ""), pm.get("since", "")) != ln.pm_guard:
             raise EngineError("the PM attachment changed while launching; run the command again.")
         got = launch_mod.execute(ln, world.run)
-        doc["pm"] = {**pm, "repo": ln.worktree, "target": ln.session, "pane": got.get("pane", ""),
+        doc["pm"] = {**pm, "repo": ln.worktree, "target": ln.pm_target, "pane": got.get("pane", ""),
                      "tmux_session": ln.tmux_session,
                      "status": "starting", "since": _iso(world.now())}
     return got

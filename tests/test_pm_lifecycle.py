@@ -37,6 +37,9 @@ def test_pm_start_dry_run_and_go_use_attached_repo_session_and_fresh_id(w):
         doc["pm"] = {"repo": str(repo), "target": "old-pm", "tmux_session": "project"}
     dry = w.zamu("pm", "start", "roadmap").stdout
     assert "tmux new-window" in dry and "-t project:" in dry
+    assert "-n roadmap-prj" in dry
+    assert "claude -n roadmap-prj --session-id" in dry
+    assert "--target roadmap-prj" in dry
     assert str(d / "pm.md") in dry
     assert "zamu attach --plan roadmap" in dry and "zamu pulse --plan roadmap" in dry
     assert "dry run" in dry
@@ -47,7 +50,9 @@ def test_pm_start_dry_run_and_go_use_attached_repo_session_and_fresh_id(w):
     assert call[call.index("-t") + 1] == "project:"
     assert call[call.index("-c") + 1] == str(repo)
     assert "--session-id" in call
-    assert store.read(d)["pm"]["target"] == call[call.index("--session-id") + 1]
+    assert call[call.index("-n") + 1] == "roadmap-prj"
+    assert call[call.index("claude") + 1:call.index("claude") + 3] == ["-n", "roadmap-prj"]
+    assert store.read(d)["pm"]["target"] == "roadmap-prj"
 
 
 def test_pm_restart_requires_confirmed_dead_and_override_session(w):
@@ -59,6 +64,7 @@ def test_pm_restart_requires_confirmed_dead_and_override_session(w):
                      "status": "dead"}
     out = w.zamu("pm", "restart", "roadmap", "--tmux-session", "new").stdout
     assert "-t new:" in out and "--resume" not in out
+    assert "-n roadmap-prj" in out and "--target roadmap-prj" in out
     w.zamu("pm", "restart", "roadmap", "--go")
     assert store.read(d)["pm"]["status"] == "starting"
     assert w.calls("tmux")[0][w.calls("tmux")[0].index("-t") + 1] == "old:"
@@ -83,7 +89,7 @@ def test_pm_uses_configured_claude_command(w):
     conf.write_text('[engines]\nclaude=["claude", "--permission-mode", "acceptEdits"]\n')
     out = w.zamu("pm", "start", "roadmap", "--tmux-session", "project",
                  env={"ZAMU_CONFIG": str(conf)}).stdout
-    assert "claude --permission-mode acceptEdits --session-id" in out
+    assert "claude --permission-mode acceptEdits -n roadmap-prj --session-id" in out
 
 
 def test_pm_target_liveness_distinguishes_unreadable_from_absent():

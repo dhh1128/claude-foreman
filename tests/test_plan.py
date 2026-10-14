@@ -108,6 +108,18 @@ oracle = "manual"
 """)
 
 
+@pytest.mark.parametrize("item,topic", [("worker-prj", ""), ("worker", 'topic = "worker-prj"')])
+def test_worker_topic_cannot_use_pm_suffix(item, topic):
+    with pytest.raises(PlanError, match="topic.*-prj.*reserved for project managers"):
+        _plan(f'''[items.{item}]
+title = "Worker"
+kind = "build"
+repo = "/r"
+oracle = "manual"
+{topic}
+''')
+
+
 def test_decision_needs_no_oracle_and_plan_due_is_inherited():
     p = _plan("""
 [plan]

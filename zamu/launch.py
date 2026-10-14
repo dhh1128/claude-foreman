@@ -47,6 +47,7 @@ class Launch:
     steps: tuple[Step, ...] = field(default=())
     token: str = ""          # carried in the wrapper's argv; proves the worker by its pane
     tmux_session: str = ""   # for PM launches, recorded again once the window is open
+    pm_target: str = ""      # PM display name, also used as the session-coord target
     pm_guard: tuple[str, str, str] = ("", "", "")  # target, status, since before a PM launch
     engine: str = "claude"
 
@@ -82,19 +83,20 @@ def worker_prompt(plan: Plan, it: Item, worktree: str, resume: bool) -> str:
 def plan_pm_launch(plan: Plan, repo: str, tmux_session: str, claude: Sequence[str]) -> Launch:
     """Build a fresh PM launch from the brief stored beside the plan."""
     sid = str(uuid.uuid4())
+    name = f"{plan.name}-prj"
     prompt = (f"You are the project manager for zamu plan '{plan.name}' in a background "
               f"window. Read {plan.path.parent / 'pm.md'} before doing anything else. "
               f"Load the zamu skill, run `zamu attach --plan {shlex.quote(plan.name)} "
-              f"--repo {shlex.quote(repo)} --target {sid}`, then run "
+              f"--repo {shlex.quote(repo)} --target {shlex.quote(name)}`, then run "
               f"`zamu pulse --plan {shlex.quote(plan.name)}`. Continue from the plan's "
               "on-disk state and brief; this is a fresh session.")
-    cmd = [*claude, "--session-id", sid, prompt]
+    cmd = [*claude, "-n", name, "--session-id", sid, prompt]
     shell = ["sh", "-c", '"$@"; exec "${SHELL:-/bin/sh}" -l', f"zamu-pm:{sid}", *cmd]
     tmux = ("tmux", "new-window", "-d", "-P", "-F", "#{pane_id}", "-t",
-            f"{tmux_session}:", "-n", f"zamu-{plan.name}", "-c", repo, *shell)
+            f"{tmux_session}:", "-n", name, "-c", repo, *shell)
     return Launch("pm", sid, repo, "", False,
                   (Step(tmux, "open a window running the PM", capture="pane"),),
-                  token=sid, tmux_session=tmux_session)
+                  token=sid, tmux_session=tmux_session, pm_target=name)
 
 
 def plan_launch(plan: Plan, it: Item, *, tmux_session: str, claude: Sequence[str],

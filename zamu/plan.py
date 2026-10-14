@@ -289,6 +289,9 @@ def parse_ask_when(text: str, items: Mapping[str, Item], where: str = "") -> tup
 def validate(plan: Plan) -> None:
     """Refuse dangling dependencies, cycles and two items sharing one worktree."""
     for it in plan.items.values():
+        if it.topic.endswith("-prj"):
+            raise PlanError(f"item {it.id!r}: topic {it.topic!r} ends in -prj, "
+                            "which is reserved for project managers; choose another topic.")
         for d in it.depends_on:
             if d not in plan.items:
                 raise PlanError(f"item {it.id!r} depends on {d!r}, which is not in the plan.")

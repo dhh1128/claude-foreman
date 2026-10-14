@@ -437,7 +437,7 @@ def snapshot(cfg: Config, world: World, *, claude_projects: Path | None = None,
     admission, why = engine.admit(cfg, world)
     saved = budgets.read() if cfg.budgets else {}
     readings = {e: (saved or {}).get(e, {"verdict": "unknown", "why": "no reading yet"}) for e in cfg.budgets}
-    plans, waits, active_by_repo, pins = [], [], defaultdict(list), []
+    plans, waits, peer_waits, active_by_repo, pins = [], [], [], defaultdict(list), []
     detail = {"now": now.isoformat(), "workers": [], "risks": [], "landed": [], "landed_unknown": []}
     for plan, doc, sts, ws in entries:
         windows: dict[str, str] = {}
@@ -493,9 +493,14 @@ def snapshot(cfg: Config, world: World, *, claude_projects: Path | None = None,
                 destination = (_worker_window(doc, it, rec, world, windows) if dashboard and
                                (rec.get("wid") or rec.get("pane") or rec.get("session")) and rec.get("worker") != "dead"
                                else _pm_window(doc, world, windows) if dashboard else _window(doc, f"{plan.name}-prj"))
-                waits.append({"id": f"{plan.name}/{iid}", "ask": ask, "text": text,
-                              "unblocks": _descendants(plan, sts, iid),
-                              "window": destination})
+                target = rec.get("wait_target", {}) if rec.get("waiting") else {}
+                row = {"id": f"{plan.name}/{iid}", "ask": ask, "text": text,
+                       "unblocks": _descendants(plan, sts, iid), "window": destination}
+                if target:
+                    row["on"] = ("the PM" if target.get("kind") == "pm" else target.get("value", "?"))
+                    peer_waits.append(row)
+                else:
+                    waits.append(row)
         for name, pin in plan.pins.items():
             if pin.repo:
                 pins.append((plan.name, name, pin.repo))
@@ -539,6 +544,7 @@ def snapshot(cfg: Config, world: World, *, claude_projects: Path | None = None,
                       "risk": {"item": risk[0].item, "over_days": risk[0].over_days,
                                "due": risk[0].due.isoformat(), "chain": risk[0].chain} if risk else None,
                       "waits": sum(w["id"].startswith(plan.name + "/") for w in waits),
+                      "peer_waits": sum(w["id"].startswith(plan.name + "/") for w in peer_waits),
                       "workers": by_engine, "slots": len(ws), "share_pct": round(100 * len(ws) / cfg.max_workers),
                       "rss_bytes": None if unknown_rss else rss,
                       "cpu_pct": None if unknown_rss else round(cpu, 1),
@@ -548,6 +554,7 @@ def snapshot(cfg: Config, world: World, *, claude_projects: Path | None = None,
                       "last_tick": doc.get("watch", {}).get("last_tick")})
     plans.sort(key=lambda p: (-p["slots"], -(p["rss_bytes"] or 0), p["name"]))
     waits.sort(key=lambda w: (-w["unblocks"], w["id"]))
+    peer_waits.sort(key=lambda w: (-w["unblocks"], w["id"]))
     conflicts = []
     for repo, ids in active_by_repo.items():
         if len({i.split("/", 1)[0] for i in ids}) > 1:
@@ -567,6 +574,7 @@ def snapshot(cfg: Config, world: World, *, claude_projects: Path | None = None,
     result = {"box": {"workers": workers, "used": len(all_workers) + len(extra), "cap": cfg.max_workers,
                     "engine_caps": cfg.engine_caps, "admission": admission, "admission_why": why,
                     "budgets": readings, "watcher": watcher}, "plans": plans, "waiting": waits,
+            "peer_waiting": peer_waits,
             "conflicts": conflicts, "errors": errors, "friction": friction_data}
     if dashboard:
         result["dashboard"] = detail
@@ -594,11 +602,14 @@ def board(data: dict[str, Any]) -> str:
         risk = p["risk"]
         risk_text = f"{risk['item']}+{risk['over_days']}d" if risk else "-"
         lines.append(f"{p['name']} {p['slots']}/{box['cap']} ({p['share_pct']}%) {held} RSS {rss} CPU {cpu} spent {spent}; {counts}; PM {p['pm']} auto {'on' if p['autolaunch'] else 'off'} risk {risk_text} waits {p['waits']} tick {tick}")
+    def short(text: str) -> str:
+        text = " ".join(text.split())
+        return text if len(text) <= 55 else text[:54] + "…"
     if data["waiting"]:
-        def short(text: str) -> str:
-            text = " ".join(text.split())
-            return text if len(text) <= 55 else text[:54] + "…"
         lines.append("waiting: " + "; ".join(f"{w['id']} {w['ask'] or '-'} (+{w['unblocks']}) {short(w['text'])}" for w in data["waiting"]))
+    if data.get("peer_waiting"):
+        lines.append("waiting on peers or PM: " + "; ".join(
+            f"{w['id']} on {w['on']} (+{w['unblocks']}) {short(w['text'])}" for w in data["peer_waiting"]))
     if data["conflicts"]:
         lines.append("conflicts: " + "; ".join(f"{c['kind']} {c.get('pin') or c['repo']}: {','.join(c['items'])}" for c in data["conflicts"]))
     if fr := data.get("friction"):
@@ -628,12 +639,20 @@ def dashboard(data: dict[str, Any], scope: str | None) -> str:
     labels = {"done": "done", "running": "running", "review": "review", "ready": "ready", "blocked": "blocked", "abandoned": "abandoned"}
     for p in data["plans"]:
         counts = ", ".join(f"{n} {labels[s]}" for s, n in p["counts"].items() if n)
-        lines.append(f"{p['name']}: {counts}; PM {p['pm']}; {p['waits']} waiting on Daniel")
+        peer_count = p.get("peer_waits", 0)
+        peer_note = f"; {peer_count} waiting on peers or PM" if peer_count else ""
+        lines.append(f"{p['name']}: {counts}; PM {p['pm']}; {p['waits']} waiting on Daniel{peer_note}")
     waits = sorted((w for w in data["waiting"] if selected(w["id"])),
                    key=lambda w: (-w["unblocks"], w["id"]))
     lines.append("Waiting on Daniel:")
     lines.extend(f"  {w['id']} {w['ask'] or '-'} (+{w['unblocks']}) {w['text']} — {w['window']}" for w in waits)
     if not waits:
+        lines.append("  none")
+    peer_waits = sorted((w for w in data.get("peer_waiting", []) if selected(w["id"])),
+                        key=lambda w: (-w["unblocks"], w["id"]))
+    lines.append("Waiting on peers or PM:")
+    lines.extend(f"  {w['id']} on {w['on']} (+{w['unblocks']}) {w['text']} — {w['window']}" for w in peer_waits)
+    if not peer_waits:
         lines.append("  none")
     workers = [w for w in detail["workers"] if selected(w["id"])]
     lines.append("Running:")

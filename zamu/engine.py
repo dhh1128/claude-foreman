@@ -26,7 +26,7 @@ from .plan import Item, Plan
 
 REPORT_STATES = ("running", "review", "done", "stuck", "waiting")
 #: Flags a report sets and a later `running`/`review`/`done` clears. `stuck`: the worker cannot go
-#: on. `waiting`: it is paused on the user -- a decision gate inside the item, an approval.
+#: on. `waiting`: it is paused on a named target, or on the user when none is named.
 FLAGS = ("stuck", "waiting")
 MARK_STATES = ("done", "abandoned", "reset")
 CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
@@ -126,6 +126,39 @@ def _event(plan_dir: Path, now: dt.datetime, item: str, what: str, **kw: Any) ->
 def _clear_flags(rec: dict[str, Any]) -> None:
     for f in FLAGS:
         rec.pop(f, None)
+    rec.pop("wait_target", None)
+
+
+def _file_fingerprint(path: str) -> list[int] | str | None:
+    """None means the file could not be checked; missing is a known state."""
+    try:
+        stat = Path(path).stat()
+    except FileNotFoundError:
+        return "missing"
+    except OSError:
+        return None
+    return [stat.st_mtime_ns, stat.st_size]
+
+
+def _wait_target(raw: str, cwd: str, repo: str, world: World) -> dict[str, Any]:
+    value = raw.strip()
+    if value == "pm":
+        return {"kind": "pm", "value": "pm"}
+    if re.fullmatch(r"[AQ]-[A-Z0-9]+", value):
+        if not repo:
+            raise EngineError("an ask target needs the item's repo for session-coord")
+        opened = world.coord.open_asks(repo)
+        return {"kind": "ask", "value": value,
+                "observed_open": None if opened is None else value in opened}
+    path = Path(value).expanduser()
+    if value and (path.is_absolute() or "/" in value or value.startswith(".") or path.suffix or
+                  (Path(cwd) / path).exists()):
+        resolved = str(path if path.is_absolute() else Path(cwd) / path)
+        fingerprint = _file_fingerprint(resolved)
+        if fingerprint is None:
+            raise EngineError(f"cannot stat waiting target {resolved}")
+        return {"kind": "file", "value": resolved, "fingerprint": fingerprint}
+    raise EngineError("session targets cannot be observed through session-coord; use a file, ask id, or pm")
 
 
 def _rec(doc: dict[str, Any], iid: str) -> dict[str, Any]:
@@ -363,6 +396,23 @@ def pulse(plan: Plan, plan_dir: Path, cfg: Config, world: World,
             if it.repo not in live_by_repo:
                 live_by_repo[it.repo] = world.coord.live_sessions(it.repo)
 
+    target_probes: dict[str, tuple[dict[str, Any], Any]] = {}
+    ask_queues: dict[str, set[str] | None] = {}
+    for iid, it in plan.items.items():
+        target = snap["items"].get(iid, {}).get("wait_target")
+        if sts[iid] not in graph.ACTIVE + graph.PARKED or not target or target.get("changed"):
+            continue
+        kind = target.get("kind")
+        if kind == "file":
+            reading = _file_fingerprint(target["value"])
+        elif kind == "ask" and it.repo:
+            if it.repo not in ask_queues:
+                ask_queues[it.repo] = world.coord.open_asks(it.repo)
+            reading = ask_queues[it.repo]
+        else:
+            continue
+        target_probes[iid] = dict(target), reading
+
     pin_values: dict[str, str | None] = {}
     for name, pin in (plan.pins.items() if oracles_due else ()):
         cwd = pin.repo if pin.repo and Path(pin.repo).is_dir() else str(plan_dir)
@@ -415,6 +465,27 @@ def pulse(plan: Plan, plan_dir: Path, cfg: Config, world: World,
                 rec["report_offset"] = end
             if read.identity is not None:
                 rec["report_digest"] = read.digest
+        for iid, (old, reading) in target_probes.items():
+            rec = _rec(doc, iid)
+            if (graph.states(plan, doc)[iid] not in graph.ACTIVE + graph.PARKED or
+                    rec.get("wait_target") != old or not rec.get("waiting") or reading is None):
+                continue
+            target = rec["wait_target"]
+            value = target["value"]
+            if target["kind"] == "file":
+                moved = reading != target["fingerprint"]
+                line = f"{iid}: {value} changed since it reported waiting on it; tell it to resume"
+            else:
+                if value in reading:
+                    target["observed_open"] = True
+                elif target.get("observed_open") is None:
+                    target["observed_open"] = False
+                moved = bool(target["observed_open"] and value not in reading)
+                line = f"{iid}: ask {value} closed since it reported waiting on it; tell it to resume"
+            if moved:
+                target["changed"] = True
+                changes.append(line)
+                _event(plan_dir, now, iid, "wait_target_changed", target=value)
         for iid, v in verdicts.items():
             rec = _rec(doc, iid)
             prev = rec.get("oracle", {}).get("ok")
@@ -1428,19 +1499,23 @@ def adopt(plan: Plan, plan_dir: Path, world: World, iid: str, session: str, pane
 
 def _apply_report(plan: Plan, plan_dir: Path, doc: dict[str, Any], iid: str, state: str,
                   line: str, now: dt.datetime, verdict: oracles.Verdict | None,
-                  evidence: str = "", pane: str = "") -> str:
+                  evidence: str = "", pane: str = "", target: dict[str, Any] | None = None) -> str:
     """Apply a command or file report while the plan transaction is held."""
     it = plan.items[iid]
     rec = _rec(doc, iid)
     if rec.get("state") in graph.FINAL or it.pinned:
         outcome = f"{iid} is already {it.pinned or rec['state']}; report recorded only"
     elif state in FLAGS:
+        _clear_flags(rec)
         rec[state] = line
+        if state == "waiting":
+            if target is not None:
+                rec["wait_target"] = target
         outcome = f"{iid} flagged {state}"
     elif state == "done":
+        _clear_flags(rec)
         if verdict is not None and verdict.ok is True:
             rec["state"] = "done"
-            _clear_flags(rec)
             rec.pop("reopened", None)
             rec.pop("stale", None)
             outcome = f"{iid} done; oracle agrees ({verdict.detail})" + _ripple(plan, doc, iid)
@@ -1475,21 +1550,24 @@ def _message_pm(pm: dict[str, Any], world: World, plan_name: str,
 
 
 def report(plan: Plan, plan_dir: Path, world: World, iid: str, state: str, line: str,
-           evidence: str = "") -> str:
+           evidence: str = "", on: str = "") -> str:
     """A worker's word. `done` is checked against the oracle and is not believed alone."""
     if iid not in plan.items:
         raise EngineError(f"no item {iid!r} in plan {plan.name!r}.")
     if state not in REPORT_STATES:
         raise EngineError(f"report state must be one of {list(REPORT_STATES)}.")
+    if on and state != "waiting":
+        raise EngineError("--on is only valid for a waiting report")
     it = plan.items[iid]
     now = world.now()
+    target = _wait_target(on, world.cwd(), it.repo, world) if on else None
     verdict = None
     if state == "done" and it.oracle and not oracles.is_manual(it.oracle):
         cwd = it.repo if it.repo and Path(it.repo).is_dir() else str(plan_dir)
         verdict = oracles.check(it.oracle, cwd, world.oracle_run)
     with store.transaction(plan_dir) as doc:
         outcome = _apply_report(plan, plan_dir, doc, iid, state, line, now, verdict, evidence,
-                                world.pane())
+                                world.pane(), target)
         pm = dict(doc.get("pm", {}))
     if state in ("review", "done") + FLAGS:
         _message_pm(pm, world, plan.name, outcome, line)

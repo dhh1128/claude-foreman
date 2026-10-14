@@ -108,7 +108,7 @@ zamu worker retire <wid>      close an idle worker's proven window and clean wor
 zamu assign <id> <wid>      give an item to a registered worker; prints its brief
 zamu verify <id> [--ok EVIDENCE | --fail WHY]   after a pin moved
 zamu rules [--add TEXT --source ASK]   the plan's standing rules
-zamu report <id> <running|review|done|stuck> "<line>"   for workers
+zamu report <id> <running|review|done|stuck|waiting> "<line>" [--on <target>]   for workers
 zamu mark <id> <done|abandoned|reset> --note "<why>"
 zamu attach --target <pm>   let worker reports wake the PM session
 zamu pm start <plan> --tmux-session <session>       preview a fresh PM window
@@ -130,6 +130,8 @@ PM commands use the tmux session and repo recorded by `attach`; `--tmux-session`
 `~/.local/state/zamu/plans/<name>/`: `plan.toml` and `pm.md` (yours), `state.json` and `events.jsonl` (zamu's). Override the root with `ZAMU_HOME`. Workers' worktrees are `<repo>/.worktrees/<topic>`.
 
 A worker confined to its worktree can append a newline terminated report to `<worktree>/.zamu/reports`: `<ISO time> <running|review|done|stuck|waiting> <one line>`. Each pulse reads complete new lines from active workers and handles them like `zamu report`. zamu creates `.zamu/.gitignore` when it launches a worktree.
+
+A `waiting` report without `--on` is a wait on Daniel. `--on` names a file path, an `A-` or `Q-` ask id in the item's repository, or `pm` for a worker queued by its PM. Pulse records a file's modification time and size at report time and calls attention when they change; it likewise calls attention when an observed open ask closes. A target change stays on the board until the worker reports progress. Session names are not accepted because session-coord does not expose message history to zamu. File reports have no `--on` field; use the command for named waits.
 
 ## Configure
 

@@ -53,8 +53,17 @@ def summary(plan: Plan, doc: dict[str, Any], cfg: Config, now: dt.datetime) -> d
                              f"-> `zamu launch --relaunch {iid}` or `zamu mark {iid} reset`")
         if r.get("stuck") and sts[iid] not in graph.FINAL + graph.PARKED:
             attention.append(f"{iid}: stuck, \"{_short(r['stuck'])}\"")
+        target = r.get("wait_target", {})
         if r.get("waiting") and sts[iid] not in graph.FINAL + graph.PARKED:
-            attention.append(f"{iid}: waiting on the user, \"{_short(r['waiting'])}\"")
+            who = ("the PM" if target.get("kind") == "pm" else
+                   f"ask {target['value']}" if target.get("kind") == "ask" else
+                   target.get("value", "the user"))
+            attention.append(f"{iid}: waiting on {who}, \"{_short(r['waiting'])}\"")
+        if r.get("waiting") and target.get("changed") and sts[iid] not in graph.FINAL:
+            if target["kind"] == "file":
+                attention.append(f"{iid}: {target['value']} changed since it reported waiting on it; tell it to resume")
+            elif target["kind"] == "ask":
+                attention.append(f"{iid}: ask {target['value']} closed since it reported waiting on it; tell it to resume")
         if r.get("claimed_done") and sts[iid] == "review":
             attention.append(f"{iid}: claims done; oracle says {_short(r.get('oracle', {}).get('detail', 'manual'), 60)}")
         if r.get("ask_error"):
@@ -290,7 +299,7 @@ def show(plan: Plan, doc: dict[str, Any], iid: str, events: list[dict[str, Any]]
     if it.due:
         lines.append(f"  due {it.due}" + (f", estimate {it.estimate_days:g}d" if it.estimate_days else ""))
     for k in ("wid", "session", "pane", "worktree", "worker", "launched", "last_report",
-              "last_line", "stuck", "waiting", "parked", "park_refusal", "stale", "reopened", "ask", "note"):
+              "last_line", "stuck", "waiting", "wait_target", "parked", "park_refusal", "stale", "reopened", "ask", "note"):
         if r.get(k):
             lines.append(f"  {k} {r[k]}")
     for e in r.get("evidence", [])[-3:]:

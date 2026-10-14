@@ -88,13 +88,14 @@ An idle worker can be parked after the configured delay: zamu closes its owned w
 
 **Every diff gets a review from a model that is not Claude** before it lands, because Claude reviewing Claude's work shares its blind spots. Rotate the seats across rounds and items rather than using one reviewer for everything; on Daniel's box that is `git diff origin/main...origin/<branch> | panel -m <seat>` over `ds`, `glm`, `kimi`, `qwen` and `gemini`. Check that each answer finished (`finish_reason` is `stop`) before trusting it, since a truncated review exits cleanly. Relay the real findings to the worker; the review rounds are execution, so the worker runs the fixes. Stop when the findings are about inputs nobody produces, and record those with `zamu feedback` rather than running another round.
 
-**Landing order is your call.** When several cleared branches wait in one repo, you decide which lands first, from what depends on what and which rebase is cheapest; it is not a question for Daniel. A worker told to wait its turn reports `running "queued to land after <items>"`, not `waiting`: `waiting` means Daniel owes a decision, and the board shows it to him as his.
+**Landing order is your call.** When several cleared branches wait in one repo, you decide which lands first, from what depends on what and which rebase is cheapest; it is not a question for Daniel. A worker told to wait its turn reports `waiting "queued to land after <items>" --on pm`, which puts the wait on the PM's side of the board and dashboard.
 
 ## Acting on attention
 
 - **Worker gone.** Its session ended before the item finished. If it was mid-work, `zamu launch --relaunch <id> --go` resumes the same conversation in a new window. If the item needs rethinking, `zamu mark <id> reset --note "<why>"` returns it to ready.
 - **No report for N hours.** Message the worker through session-coord and ask for a one-line status. Do not open its pane and read the scrollback.
 - **Waiting on the user.** A worker paused at a gate inside its item. These lines are the board's account of what the user owes; gather them into your one line to the user rather than re-asking.
+- **Waiting on a file or ask.** The board names the target. When pulse says it changed or closed, tell the worker to resume and what moved. A wait on `pm` is yours to clear when you give the worker its next instruction.
 - **Stuck.** Read the one line. If you or a peer session can answer it, answer it; if it is the user's to decide, file one ask that stands on its own. If a reported trust or permission prompt needs inspection, capture the pane with `tmux capture-pane -e -p -t <pane>` and apply the prompt-line rule below.
 - **Claims done, oracle disagrees.** Usually the PR is open and not merged. Leave it. If the oracle is wrong, fix the oracle in the plan file rather than marking done by hand.
 - **Late, or overdue.** The board gives the chain that cannot finish in time. Tell the user once, with the chain and the number of days, and what you would cut.
@@ -188,7 +189,7 @@ You were started with a prompt naming your plan and item. Read the briefs it nam
 - `running` at each real milestone, not every step;
 - `review` with the PR URL once it is open;
 - `done` when you believe the work is finished — zamu checks the exit condition itself, so a `done` before the merge leaves the item in review, which is correct. Add `--evidence <path or URL>` naming where the proof lives (a run log, an evidence file, the PR);
-- `waiting` when you pause for the user — a decision node to approve, a question you filed — naming what they must decide and any ask ids. A branch the PM has cleared but told to wait its turn is `running "queued to land after <items>"`, because the go comes from the PM, not the user;
+- `waiting` when you pause: name what is needed, and add `--on <file path>` when a peer is editing a file, `--on <A- or Q- ask id>` when an open ask must close, or `--on pm` when the PM has queued your branch to land. Without `--on`, the board treats the wait as Daniel's decision. A changed file or closed ask produces one pulse notice for the PM to tell you to resume;
 - `stuck` with what you need, when you cannot go on for any other reason.
 
 One line each. The PM reads them every wake, and a paragraph costs it context every time.

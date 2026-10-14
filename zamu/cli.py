@@ -442,7 +442,7 @@ def cmd_rules(args) -> int:
 def cmd_report(args) -> int:
     plan, d = _load(args)
     print(engine.report(plan, d, world(), args.item, args.state, args.line,
-                        evidence=args.evidence or ""))
+                        evidence=args.evidence or "", on=args.on or ""))
     return 0
 
 
@@ -639,6 +639,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("state", choices=engine.REPORT_STATES)
     s.add_argument("line")
     s.add_argument("--evidence", help="where the proof lives: a path, a URL, a run id")
+    s.add_argument("--on", help="waiting target: file path, ask id, or pm")
     s.set_defaults(func=cmd_report)
     s = sub.add_parser("mark", help="close a manual item, abandon one, or reset it")
     plan_arg(s)

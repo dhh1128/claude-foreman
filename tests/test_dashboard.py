@@ -60,6 +60,25 @@ def test_dashboard_uses_attached_pm_pane_and_recorded_target(tmp_path):
     assert "Q-ONE (+0) Ship? — bakobo:imbu-prj" in portfolio.dashboard(data, "alpha")
 
 
+def test_dashboard_shows_pm_wait_outside_daniels_queue(tmp_path):
+    root = config.plans_dir() / 'alpha'
+    root.mkdir(parents=True)
+    (root / 'plan.toml').write_text(f'[items.work]\nkind="build"\ntitle="Work"\nrepo="{tmp_path}"\noracle="manual"\n')
+    (root / 'state.json').write_text(json.dumps({'items': {'work': {
+        'state': 'running', 'waiting': 'queued to land',
+        'wait_target': {'kind': 'pm', 'value': 'pm'}}}, 'pm': {}}))
+    data = portfolio.snapshot(Config(), World(now=lambda: NOW, scan=lambda: [],
+                              run=lambda argv: (0, 'active', '')), dashboard=True,
+                              claude_projects=tmp_path / 'none', codex_sessions=tmp_path / 'none')
+    assert data['waiting'] == []
+    assert data['peer_waiting'][0]['on'] == 'the PM'
+    assert 'alpha/work on the PM' in portfolio.board(data)
+    out = portfolio.dashboard(data, 'alpha')
+    assert '0 waiting on Daniel; 1 waiting on peers or PM' in out
+    assert 'alpha/work on the PM' in out
+    assert 'alpha/work' not in out.split('Waiting on peers or PM:')[0]
+
+
 def test_dashboard_shows_worker_git_pr_ci_and_named_window(tmp_path):
     root = config.plans_dir() / "alpha"
     root.mkdir(parents=True)

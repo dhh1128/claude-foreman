@@ -53,7 +53,7 @@ def key(line: str) -> str:
 
 def _report_wait(line: str, doc: dict[str, Any]) -> bool:
     """The report notice has already delivered this waiting line to the PM."""
-    iid, sep, rest = line.partition(": waiting on the user, ")
+    iid, sep, rest = line.partition(": waiting on ")
     return bool(sep and rest and doc.get("items", {}).get(iid, {}).get("waiting"))
 
 
@@ -157,7 +157,7 @@ def finish_tick(t: Tick, plan, plan_dir: Path, cfg: config.Config,
                 # A pre-upgrade watcher may have recorded the old full-line key.
                 if gained and DIGITS.sub("#", a) not in seen:
                     t.attention.append(a)
-            elif k not in seen:
+            elif k not in seen and a not in t.changes:
                 t.attention.append(a)
         watch_state["notified"] = sorted(current)
         watch_state["merge_members"] = queues

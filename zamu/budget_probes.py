@@ -143,23 +143,27 @@ def _usage(projects: Path, since: dt.datetime, factors: dict | None = None) -> f
                         usage = message.get("usage")
                         if at < since or not mid or mid in seen or not isinstance(usage, dict):
                             continue
-                        model = message.get("model", "").lower()
-                        tier = "opus" if "opus" in model else "haiku" if "haiku" in model else "sonnet"
-                        factor = (factors or {}).get(tier, {"opus": 5, "sonnet": 3, "haiku": 1}[tier])
-                        cache = usage.get("cache_creation", {}) or {}
-                        five = (cache.get("ephemeral_5m_input_tokens", 0) if cache else
-                                usage.get("cache_creation_input_tokens", 0))
-                        hour = cache.get("ephemeral_1h_input_tokens", 0)
-                        total += factor * (usage.get("input_tokens", 0)
-                                  + 1.25 * five + 2 * hour
-                                  + 0.1 * usage.get("cache_read_input_tokens", 0)
-                                  + 5 * usage.get("output_tokens", 0))
+                        total += weighted_usage(message, factors)
                         seen.add(mid)
                     except (ValueError, TypeError, AttributeError):
                         continue
         except OSError:
             return None
     return total
+
+
+def weighted_usage(message: dict, factors: dict | None = None) -> float:
+    """The Claude probe's calibrated model and cache weights for one unique message."""
+    usage = message["usage"]
+    model = message.get("model", "").lower()
+    tier = "opus" if "opus" in model else "haiku" if "haiku" in model else "sonnet"
+    factor = (factors or {}).get(tier, {"opus": 5, "sonnet": 3, "haiku": 1}[tier])
+    cache = usage.get("cache_creation", {}) or {}
+    five = cache.get("ephemeral_5m_input_tokens", 0) if cache else usage.get("cache_creation_input_tokens", 0)
+    hour = cache.get("ephemeral_1h_input_tokens", 0)
+    return factor * (usage.get("input_tokens", 0) + 1.25 * five + 2 * hour
+                     + 0.1 * usage.get("cache_read_input_tokens", 0)
+                     + 5 * usage.get("output_tokens", 0))
 
 
 def _claude_window(now: dt.datetime, reset: str) -> tuple[dt.datetime, dt.datetime | None]:

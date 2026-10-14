@@ -88,6 +88,7 @@ Oracles are `pr:owner/repo#N` (merged), `cmd:<shell>` (exits 0), `file:<path>` (
 
 ```
 zamu board                  the compact status a waking PM reads
+zamu portfolio [--json]     one compact board across every plan on this box
 zamu pulse                  check oracles and workers, escalate decisions, print the board
 zamu launch --ready         what would launch now; prints the exact commands, runs nothing
 zamu launch --ready --go    create worktrees, open tmux windows, start workers
@@ -156,6 +157,8 @@ probe = ["zamu", "budget", "claude", "--projects", "~/.claude/projects", "--max-
 A probe prints one JSON object with optional `figure`, `used_pct`, `resets_at`, and `estimate` fields. Exit 0 admits, 75 means not now, and any other exit means zamu could not look. A missing budget entry always admits that engine through this check. An unknown reading can be used only if no preferred engine admits; the board shows it as unknown. CPU and memory admission still falls back to the count cap when its check cannot look. The difference is deliberate: a budget failure can consume a whole worker session, while a box check failure is bounded by the worker count.
 
 `zamu budget codex` reads Codex rollout limits. `zamu budget openrouter --min-usd 5` reads the OpenRouter key via `llm keys get openrouter` and checks remaining credit. `zamu budget claude` estimates usage from one account's transcript directory; run `zamu budget claude --projects ~/.claude/projects calibrate 76` after reading 76% on Claude's usage page to set its allowance. For a known weekly reset, pass `--reset "Thu 17:00 UTC"`; without it the estimate uses a rolling seven day window. `~/.config/budget/claude.toml` can set `[model_factors]` for `opus`, `sonnet`, and `haiku`; the defaults are 5, 3, and 1. The Claude figure is an estimate and needs recalibration if its model mix changes.
+
+`zamu portfolio` shows machine slots and engine caps, admission and budget readings, watcher health and each plan's last tick. Plan lines are sorted by live workers and show process tree RSS, sampled CPU%, estimated session usage by engine, PM status, autolaunch, nearest deadline risk and user waits. Claude spend is in weighted tokens (`wtok`), and Codex spend is in raw tokens (`tok`); `?` means the measurement could not be made, while `~` marks an estimate. The board ranks open asks and waiting workers by unfinished downstream items, then names active repo and pin conflicts across plans. `--json` provides the same facts for tools.
 
 House rules for the skill go in `~/.config/zamu/addendum.md` (or `ZAMU_ADDENDUM`), which the skill reads first and treats as more specific than itself.
 

@@ -198,6 +198,15 @@ def cmd_board(args) -> int:
     return 0
 
 
+def cmd_portfolio(args) -> int:
+    from . import portfolio, procs
+    w = world()
+    w.scan = procs.sample_cpu
+    data = portfolio.snapshot(config.load(), w)
+    print(json.dumps(data, indent=1, default=str) if args.json else portfolio.board(data), end="" if not args.json else "\n")
+    return 0
+
+
 def cmd_pulse(args) -> int:
     plan, d = _load(args)
     cfg = config.load()
@@ -459,6 +468,9 @@ def build_parser() -> argparse.ArgumentParser:
     plan_arg(s)
     s.add_argument("--json", action="store_true")
     s.set_defaults(func=cmd_board)
+    s = sub.add_parser("portfolio", help="one compact board across all plans")
+    s.add_argument("--json", action="store_true")
+    s.set_defaults(func=cmd_portfolio)
     s = sub.add_parser("pulse", help="check oracles and workers, escalate, then print the board")
     plan_arg(s)
     s.set_defaults(func=cmd_pulse)

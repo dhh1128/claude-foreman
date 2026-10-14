@@ -38,7 +38,7 @@ import os
 import re
 import signal
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Iterable, Mapping
 
@@ -55,6 +55,8 @@ class Proc:
     cmd: str
     parent_cmd: str = ""
     age_minutes: float = 0.0
+    rss_bytes: int = 0
+    cpu_pct: float = 0.0
 
     @property
     def deleted(self) -> bool:
@@ -219,26 +221,49 @@ def scan(proc_root: str = "/proc") -> list[Proc] | None:
     except (OSError, ValueError, IndexError):
         return None
     raw = {}
-    for d in root.iterdir():
+    try:
+        entries = list(root.iterdir())
+    except OSError:
+        return None
+    for d in entries:
         if not d.name.isdigit():
             continue
         try:
             stat = (d / "stat").read_text()
             cwd = os.readlink(d / "cwd")
             cmd = (d / "cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace").strip()
-        except OSError:
+            rss_pages = int((d / "statm").read_text().split()[1])
+        except (OSError, ValueError, IndexError):
             continue  # gone, or another user's: not ours to judge
         # comm can contain spaces and parentheses; the fields after the LAST ')' are fixed.
         head, _, rest = stat.rpartition(")")
         f = rest.split()
         try:
             raw[int(d.name)] = (int(f[1]), cwd, int(f[11]) + int(f[12]), int(f[19]), cmd,
-                                head.partition("(")[2])
+                                head.partition("(")[2], rss_pages * os.sysconf("SC_PAGE_SIZE"))
         except (IndexError, ValueError):
             continue
-    return [Proc(pid, ppid, cwd, cpu, start, cmd, raw.get(ppid, (0, "", 0, 0, "", ""))[5],
-                 max(0.0, (uptime - start / ticks) / 60))
-            for pid, (ppid, cwd, cpu, start, cmd, _comm) in raw.items()]
+    return [Proc(pid, ppid, cwd, cpu, start, cmd, raw.get(ppid, (0, "", 0, 0, "", "", 0))[5],
+                 max(0.0, (uptime - start / ticks) / 60), rss,
+                 round(100 * cpu / max(uptime * ticks - start, 1), 1))
+            for pid, (ppid, cwd, cpu, start, cmd, _comm, rss) in raw.items()]
+
+
+def sample_cpu(interval: float = 0.15) -> list[Proc] | None:
+    """One short CPU interval for the portfolio, with RSS from the later snapshot."""
+    before = scan()
+    if before is None:
+        return None
+    start = time.monotonic()
+    time.sleep(interval)
+    after = scan()
+    if after is None:
+        return None
+    elapsed = time.monotonic() - start
+    ticks = os.sysconf("SC_CLK_TCK")
+    prior = {p.key: p for p in before}
+    return [replace(p, cpu_pct=round(100 * max(p.cpu - prior[p.key].cpu, 0) / (ticks * elapsed), 1))
+            if p.key in prior else p for p in after]
 
 
 def kill(p: Proc, grace: float = 5.0) -> str:

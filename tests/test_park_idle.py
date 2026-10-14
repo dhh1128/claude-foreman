@@ -9,7 +9,7 @@ import os
 import pytest
 
 from zamu import cli, engine, graph, launch, render, store
-from zamu.config import Config
+from zamu.config import Config, ModelSpec
 from zamu.coord import Coord
 from zamu.plan import parse
 from zamu.procs import Proc
@@ -109,6 +109,21 @@ def test_resume_after_ask_dissolves_reuses_session_and_takes_slot(tmp_path):
     rec = store.read(tmp_path)["items"]["a"]
     assert rec["state"] == "running" and rec["session"] == "sid"
     assert engine.slots(plan, store.read(tmp_path), Config())[0] == 1
+
+
+def test_parked_resume_keeps_the_launched_model_after_plan_tier_changes(tmp_path):
+    plan, tree = setup_worker(tmp_path)
+    plan = parse(f'[items.a]\ntitle="A"\nkind="build"\nrepo="{tree.parent.parent}"\n'
+                 'oracle="manual"\ntier="deep"\n', tmp_path / 'plan.toml')
+    with store.transaction(tmp_path) as doc:
+        doc['items']['a'].update(state='parked', tier='light', model='sonnet',
+                                 reasoning_effort='', parked={'session': 'sid'})
+    cfg = Config(models={'claude': {'deep': ModelSpec('fable')}})
+    ln, = engine.prepare(plan, tmp_path, cfg, world(T0, []), ['a'], parked=True,
+                         unblocked='approval arrived')
+    assert (ln.tier, ln.model) == ('light', 'sonnet')
+    assert ('--model', 'sonnet') in [ln.steps[-1].argv[i:i + 2]
+                                    for i in range(len(ln.steps[-1].argv))]
 
 
 def test_open_ask_prevents_automatic_resume(tmp_path):

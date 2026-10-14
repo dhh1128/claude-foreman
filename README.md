@@ -124,6 +124,8 @@ zamu show <id>              one item in full
 zamu check | plans | addendum
 ```
 
+Use `zamu tell <item|wid> - < message.txt` to read a message from stdin. This keeps the message body out of the command arguments.
+
 PM commands use the tmux session and repo recorded by `attach`; `--tmux-session` overrides the session and is required when the plan has no prior attachment. On a plan's first start, run the command from the repo the PM should use. Both commands default to a dry run. The watcher files an `A` ask to restart a PM when its session has disappeared and the plan has active workers or attention; it never starts one automatically.
 
 ## Where it keeps things

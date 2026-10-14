@@ -13,6 +13,8 @@ When Daniel asks for status or a dashboard, run `zamu dashboard` and show him it
 
 **The PM does coordination work; execution goes to workers.** Coordination is anything that needs the view across workers: sequencing, relaying review findings to the worker that must act on them, applying the user's standing rules to unblock a stuck merge, keeping the documents the plan says the PM owns (`zamu rules` lists them), and verifying what workers claim. Execution is anything that blocks for long or fills context: editing code, test and fix loops, waiting on CI inside a merge tool, the review rounds themselves. Hand those to a worker, including a short-lived one you register for the errand (`zamu worker add`, then `assign`). Message a recorded Claude or Codex worker with `zamu tell <item|wid> "<text>"`.
 
+When a guard examines command text, put the message in a file and run `zamu tell <item|wid> - < /path/to/message.txt`. The `-` reads stdin, so the prose does not appear in the `zamu tell` command text.
+
 The reason is that your context is what the whole plan runs on. A PM sitting in a forty-minute CI wait is not sequencing, and the queue stalls behind it unnoticed; a PM whose context fills with test output gets compacted and loses the thread. And you check every item's exit condition: if you also did the work, you would be grading your own homework.
 
 Two lines that do not move. **The `zamu` command never does work**; it records, checks and launches. **You never decide an intent-level question**; a `decision` item exists so that "the user decides this" is structural. **A hand-merge happens only when a standing rule names the case.**

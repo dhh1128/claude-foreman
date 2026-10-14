@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import datetime as dt
+import io
+import sys
 
 import pytest
 
@@ -181,9 +183,23 @@ def test_cli_tell_accepts_plan_and_item(setup, monkeypatch, capsys):
     assert coord.sent == [("/r", "sid-1", "Check the diff")]
 
 
+def test_cli_tell_reads_stdin_when_text_is_dash(setup, monkeypatch, capsys):
+    recorded(setup, "claude", "sid-1", "%5")
+    coord = FakeCoord([{"session_id": "sid-1", "pane": "%5"}])
+    monkeypatch.setattr(cli, "world", lambda: engine.World(
+        coord=coord, now=lambda: NOW, pane_exists=lambda pane: True))
+    monkeypatch.setattr(sys, "stdin", io.StringIO("Please check the git merge result.\nThen report back.\n"))
+    _, d = setup
+
+    assert cli.main(["tell", "--plan", str(d), "a", "-"]) == 0
+
+    assert "told worker-1" in capsys.readouterr().out
+    assert coord.sent == [("/r", "sid-1", "Please check the git merge result.\nThen report back.\n")]
+    assert store.events(d, "a")[-1]["text"].startswith("Please check the git merge result.")
+
+
 def test_coord_reports_filed_mail_even_when_doorbell_refusal_is_on_stderr():
-    coord = Coord(run=lambda argv: (0, "", "filed for worker, but the doorbell could not be rung"),
+    coord = Coord(run=lambda argv: (0, "filed for worker", "the doorbell could not be rung"),
                   binary="session-coord")
 
-    assert coord.msg("/r", "sid-1", "Hello") == (
-        True, "filed for worker, but the doorbell could not be rung")
+    assert coord.msg("/r", "sid-1", "Hello") == (True, "filed for worker")

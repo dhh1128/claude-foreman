@@ -458,7 +458,8 @@ def cmd_report(args) -> int:
 
 def cmd_tell(args) -> int:
     plan, d = _load(args)
-    print(engine.tell(plan, d, world(), args.item_or_wid, args.text))
+    text = sys.stdin.read() if args.text == "-" else args.text
+    print(engine.tell(plan, d, world(), args.item_or_wid, text))
     return 0
 
 
@@ -660,7 +661,7 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("tell", help="message a recorded worker through session-coord")
     plan_arg(s)
     s.add_argument("item_or_wid", help="item id or worker id")
-    s.add_argument("text", help="message to deliver")
+    s.add_argument("text", help="message to deliver, or - to read stdin")
     s.set_defaults(func=cmd_tell)
     s = sub.add_parser("mark", help="close a manual item, abandon one, or reset it")
     plan_arg(s)

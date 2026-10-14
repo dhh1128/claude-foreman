@@ -97,9 +97,19 @@ def tick(plan_dir: Path, cfg: config.Config, base_world: Callable[[], engine.Wor
         return t
     t = Tick(plan.name)
     w = world_for(store.read(plan_dir), cfg, base_world)
-    t.changes += engine.pulse(plan, plan_dir, cfg, w, oracles_due=oracles_due)["changes"]
+    t.changes += engine.pulse(plan, plan_dir, cfg, w, oracles_due=oracles_due,
+                              notify_parks=False)["changes"]
 
     if plan.autolaunch:
+        for iid in engine.ready_to_resume(plan, plan_dir, cfg, w):
+            try:
+                (ln,) = engine.prepare(plan, plan_dir, cfg, w, [iid], parked=True)
+                got = engine.commit_launch(plan, plan_dir, cfg, w, ln)
+                t.launched.append(f"{iid} resumed (pane {got.get('pane', '?')})")
+            except engine.BusyError:
+                pass
+            except (engine.EngineError, LaunchError, OSError) as e:
+                t.errors.append(f"could not resume {iid}: {e}")
         for iid in engine.ready_to_fill(plan, plan_dir, cfg, w):
             try:
                 (ln,) = engine.prepare(plan, plan_dir, cfg, w, [iid])

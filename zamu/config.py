@@ -22,6 +22,7 @@ for their own machine; nothing here defaults to it.
     admission = ["headroom", "check"]   # measured admission; max_workers stays a backstop
     idle_minutes = 30        # a leftover process whose CPU has not moved this long is "idle"
     pane_quiet_minutes = 30  # a running worker's pane unchanged this long may be at a prompt
+    park_after_minutes = 30  # idle blocked worker gives back its window and slot
 
 `ZAMU_MAX_WORKERS` overrides `max_workers`. A plan's own `max_workers` can only lower the
 cap, never raise it: the machine's limit exists because of memory, and a plan file written on
@@ -75,6 +76,7 @@ class Config:
     escalate: str = "session-coord"
     idle_minutes: float = 30.0       # CPU still this long marks a leftover process as idle
     pane_quiet_minutes: float = 30.0 # a running worker's pane unchanged this long: at a prompt?
+    park_after_minutes: float = 30.0 # idle and blocked worker gives back its window and slot
     #: A command asked before each launch: exit 0 admit, 75 not now, anything else could not
     #: look (the count cap alone then applies). Empty: the count cap alone.
     admission: tuple[str, ...] = ()
@@ -145,7 +147,7 @@ def load() -> Config:
             raise ConfigError(f"[budgets.{name}].probe must be a nonempty command list.")
         parsed[name] = tuple(command)
     kw["budgets"] = parsed
-    for key in ("budget_refresh_minutes", "budget_ask_minutes"):
+    for key in ("budget_refresh_minutes", "budget_ask_minutes", "park_after_minutes"):
         if not isinstance(kw.get(key, 10), (int, float)) or kw.get(key, 10) <= 0:
             raise ConfigError(f"{key} must be positive.")
     if kw.get("escalate", "session-coord") not in ("session-coord", "none"):

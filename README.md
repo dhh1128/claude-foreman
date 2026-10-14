@@ -93,6 +93,8 @@ zamu pulse                  check oracles and workers, escalate decisions, print
 zamu launch --ready         what would launch now; prints the exact commands, runs nothing
 zamu launch --ready --go    create worktrees, open tmux windows, start workers
 zamu launch --relaunch <id> --go   resume a dead worker's conversation
+zamu resume <id>              resume a parked worker when its named asks close
+zamu resume <id> --unblocked "why"   PM clears a wait with no named ask
 zamu adopt <id> --session <sid>   take on a worker started by hand
 zamu worker add <wid> --engine codex|subagent|claude [--pane] [--session]
 zamu worker list              show registered workers and their last checked status
@@ -129,6 +131,7 @@ A worker confined to its worktree can append a newline terminated report to `<wo
 
 ```toml
 max_workers = 3            # ZAMU_MAX_WORKERS overrides; a plan can only lower it
+park_after_minutes = 30   # idle workers give back their windows and slots
 stall_hours = 4
 launch_grace_minutes = 3
 tmux_session = ""          # default: the session zamu is run from
@@ -137,6 +140,8 @@ escalate = "session-coord" # or "none"
 ```
 
 Workers are started by tmux, not by your interactive shell, so a shell function or alias that adds flags to `claude` does not apply to them. Put the flags in `claude` (or under `[engines]`). Choose them knowingly: a worker runs unattended, so a permission prompt stalls it where nobody sees, while a flag that skips permissions or a sandbox lets it act unreviewed. zamu defaults to neither.
+
+A worker that reports `waiting` or `stuck`, or whose pane and process tree stay idle, is parked after `park_after_minutes`. Its window closes, but its session, worktree, dirty file list, last report and ask IDs remain in state. Parked items use no slot. Under autolaunch, the watcher resumes a parked worker when named asks it saw open at parking have all left the queue; for an unlabelled or unfiled wait, the PM can run `zamu resume <id> --unblocked "what changed"`. Resume uses the worker's saved conversation and the usual slot, admission and engine budget checks.
 
 Engine budgets can be measured with optional commands in `~/.config/zamu/config.toml`:
 

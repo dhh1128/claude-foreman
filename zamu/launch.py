@@ -50,17 +50,21 @@ class Launch:
     pm_target: str = ""      # PM display name, also used as the session-coord target
     pm_guard: tuple[str, str, str] = ("", "", "")  # target, status, since before a PM launch
     engine: str = "claude"
+    parked: bool = False
 
 
-def worker_prompt(plan: Plan, it: Item, worktree: str, resume: bool) -> str:
+def worker_prompt(plan: Plan, it: Item, worktree: str, resume: bool, changed: str = "") -> str:
     briefs = " then ".join(p for p in (plan.common_brief, it.brief) if p) or "(no brief given)"
     oracle = " AND ".join(it.oracle) if it.oracle else "none"
     rep = f"zamu report --plan {shlex.quote(plan.name)} {it.id}"
-    head = (f"You were relaunched as the worker for zamu plan '{plan.name}', item "
-            f"'{it.id}'. Your previous session ended; check the worktree and branch state "
-            f"before continuing." if resume else
-            f"You are the worker session for zamu plan '{plan.name}', item '{it.id}': "
-            f"{it.title}.")
+    if resume:
+        head = (f"You were relaunched as the worker for zamu plan '{plan.name}', item "
+                f"'{it.id}'. Your previous session ended; check the worktree and branch state "
+                f"before continuing.")
+        if changed:
+            head += f" Since you were parked, {changed}."
+    else:
+        head = f"You are the worker session for zamu plan '{plan.name}', item '{it.id}': {it.title}."
     return (
         f"{head} Read {briefs} before doing anything else. You are in the worktree {worktree} "
         f"on branch {it.topic}. Report to the project manager with `{rep} running \"<one "
@@ -101,7 +105,8 @@ def plan_pm_launch(plan: Plan, repo: str, tmux_session: str, claude: Sequence[st
 
 def plan_launch(plan: Plan, it: Item, *, tmux_session: str, claude: Sequence[str],
                 default_branch: str, worktree_exists: bool, branch_exists: bool,
-                session: str | None = None, worktree: str = "", engine: str = "claude") -> Launch:
+                session: str | None = None, worktree: str = "", engine: str = "claude",
+                changed: str = "", parked: bool = False) -> Launch:
     """The exact commands for one launch. `session` given means resume that conversation.
 
     `worktree` names a tree the worker already used -- an adopted worker may have run in the
@@ -134,12 +139,14 @@ def plan_launch(plan: Plan, it: Item, *, tmux_session: str, claude: Sequence[str
     else:
         cmd = list(claude)  # other engines take the prompt as their first argument
         if engine == "codex":
+            if resume:
+                cmd += ["resume", sid]
             # Codex otherwise stops at an unattended "Trust this folder?" prompt. The
             # command-line config applies to this launch without editing the user's config.
             import json
             for root in (repo, wt):
                 cmd += ["-c", f'projects.{json.dumps(root)}.trust_level="trusted"']
-    cmd.append(worker_prompt(plan, it, wt, resume))
+    cmd.append(worker_prompt(plan, it, wt, resume, changed))
     tmux = ["tmux", "new-window", "-d", "-P", "-F", "#{pane_id}"]
     if target:
         tmux += ["-t", target]
@@ -154,7 +161,8 @@ def plan_launch(plan: Plan, it: Item, *, tmux_session: str, claude: Sequence[str
     shell = ["sh", "-c", '"$@"; exec "${SHELL:-/bin/sh}" -l', f"zamu-worker:{sid}", *cmd]
     tmux += ["-n", it.topic, "-c", wt, *shell]
     steps.append(Step(tuple(tmux), "open a window running the worker", capture="pane"))
-    return Launch(it.id, sid, wt, it.topic, resume, tuple(steps), token=sid, engine=engine)
+    return Launch(it.id, sid, wt, it.topic, resume, tuple(steps), token=sid, engine=engine,
+                  parked=parked)
 
 
 # --- facts about the repo, gathered before planning ---------------------------------------

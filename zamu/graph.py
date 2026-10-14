@@ -29,6 +29,7 @@ from typing import Any, Mapping
 from .plan import Item, Plan
 
 ACTIVE = ("running", "review")
+PARKED = ("parked",)
 FINAL = ("done", "abandoned")
 
 
@@ -43,7 +44,7 @@ def states(plan: Plan, doc: Mapping[str, Any]) -> dict[str, str]:
         rec = recs.get(iid, {})
         if it.pinned:
             s = it.pinned
-        elif rec.get("state") in FINAL + ACTIVE:
+        elif rec.get("state") in FINAL + ACTIVE + PARKED:
             s = rec["state"]
         elif all(st(d) == "done" for d in it.depends_on):
             s = "ready"

@@ -14,6 +14,7 @@ reported as *could not look* (None), never as an empty answer.
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass, field
@@ -113,3 +114,28 @@ class Coord:
         if r is None:
             return False, "session-coord could not be run"
         return r[0] == 0, (r[2] or r[1]).strip()
+
+    def open_asks(self, repo: str) -> set[str] | None:
+        """Tags in the printed queue; None if the queue could not be read."""
+        r = self._call(["ask", "list", "--repo", repo])
+        if r is None or r[0] != 0:
+            return None
+        out = r[1].strip()
+        if out == "No open asks.":
+            return set()
+        if not out.startswith("Open asks, in the order they have to happen."):
+            return None
+        tags = set(re.findall(r"^  \[[AQ]\] ([AQ]-[A-Z0-9]+)(?:\s|$)", out, re.M))
+        return tags if tags else None
+
+    def merge_locked(self, repo: str) -> bool | None:
+        """Conservatively regard any held merge lock as protecting this worker."""
+        r = self._call(["lock", "merge", "--repo", repo, "--status"])
+        if r is None or r[0] != 0:
+            return None
+        out = r[1].strip()
+        if out == "merge: free":
+            return False
+        if out.startswith("merge: held by "):
+            return True
+        return None

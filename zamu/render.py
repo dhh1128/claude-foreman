@@ -50,9 +50,9 @@ def summary(plan: Plan, doc: dict[str, Any], cfg: Config, now: dt.datetime) -> d
         if sts[iid] in graph.ACTIVE and r.get("worker") == "dead":
             attention.append(f"{iid}: worker gone, last \"{_short(r.get('last_line', ''), 50)}\" "
                              f"-> `zamu launch --relaunch {iid}` or `zamu mark {iid} reset`")
-        if r.get("stuck") and sts[iid] not in graph.FINAL:
+        if r.get("stuck") and sts[iid] not in graph.FINAL + graph.PARKED:
             attention.append(f"{iid}: stuck, \"{_short(r['stuck'])}\"")
-        if r.get("waiting") and sts[iid] not in graph.FINAL:
+        if r.get("waiting") and sts[iid] not in graph.FINAL + graph.PARKED:
             attention.append(f"{iid}: waiting on the user, \"{_short(r['waiting'])}\"")
         if r.get("claimed_done") and sts[iid] == "review":
             attention.append(f"{iid}: claims done; oracle says {_short(r.get('oracle', {}).get('detail', 'manual'), 60)}")
@@ -62,6 +62,8 @@ def summary(plan: Plan, doc: dict[str, Any], cfg: Config, now: dt.datetime) -> d
             attention.append(f"{iid}: {error}")
         if r.get("report_read_error") and sts[iid] in graph.ACTIVE:
             attention.append(f"{iid}: {r['report_read_error']}")
+        if r.get("park_refusal") and sts[iid] in graph.ACTIVE:
+            attention.append(f"{iid}: idle but cannot park: {_short(r['park_refusal'])}")
     for iid in plan.items:
         r = recs.get(iid, {})
         quiet = r.get("pane_activity")
@@ -129,7 +131,13 @@ def summary(plan: Plan, doc: dict[str, Any], cfg: Config, now: dt.datetime) -> d
                          "(serialize with `session-coord lock merge`)")
 
     active = []
+    parked = []
     for iid in plan.items:
+        if sts[iid] == "parked":
+            r = recs.get(iid, {})
+            info = r.get("parked", {})
+            parked.append(f"{iid} (parked, waits on {_short(info.get('reason', '?'), 70)}"
+                          f"{', asks ' + ', '.join(info['asks']) if info.get('asks') else ''})")
         if sts[iid] in graph.ACTIVE:
             r = recs.get(iid, {})
             who = f"[{r['wid']}] " if r.get("wid") and r["wid"] != iid else ""
@@ -155,12 +163,12 @@ def summary(plan: Plan, doc: dict[str, Any], cfg: Config, now: dt.datetime) -> d
                     attention.append(f"{iid}: {e} cap {ecap} held by {', '.join(holders) or 'workers in another plan'}")
     launch = eligible
     idle = [f"{wid} ({w.get('engine', '?')})" for wid, w in doc.get("workers", {}).items()
-            if w.get("worker") not in ("dead", "retired")
+            if w.get("worker") not in ("dead", "retired", "parked")
             and (not (w.get("pane") or w.get("session")) or w.get("worker") == "live")
             and not any(sts.get(i) in graph.ACTIVE for i in w.get("items", []))]
     unknown = [f"{wid} ({w.get('engine', '?')})" for wid, w in doc.get("workers", {}).items()
                if (w.get("pane") or w.get("session")) and w.get("worker") != "live"
-               and w.get("worker") not in ("dead", "retired")
+               and w.get("worker") not in ("dead", "retired", "parked")
                and not any(sts.get(i) in graph.ACTIVE for i in w.get("items", []))]
     for iid, it in plan.items.items():
         if it.kind != "build" and sts[iid] == "ready":
@@ -180,10 +188,10 @@ def summary(plan: Plan, doc: dict[str, Any], cfg: Config, now: dt.datetime) -> d
     blocked = [f"{iid}<-{','.join(d for d in plan.items[iid].depends_on if sts[d] != 'done')}"
                for iid in plan.items if sts[iid] == "blocked"]
     counts = {s: sum(1 for v in sts.values() if v == s)
-              for s in ("done", "running", "review", "ready", "blocked", "abandoned")}
+              for s in ("done", "running", "review", "parked", "ready", "blocked", "abandoned")}
     return {"plan": plan.name, "date": now.date().isoformat(), "workers": [used, cap],
             "elsewhere": elsewhere,
-            "counts": counts, "attention": attention, "active": active,
+            "counts": counts, "attention": attention, "active": active, "parked": parked,
             "launchable": launch, "idle_workers": idle, "unknown_workers": unknown,
             "budgets": readings,
             "slots": max(cap - used, 0), "waiting": waiting,
@@ -214,6 +222,8 @@ def board(plan: Plan, doc: dict[str, Any], cfg: Config, now: dt.datetime) -> str
     if s["active"]:
         out.append("active:")
         out += [f"  {a}" for a in s["active"]]
+    if s["parked"]:
+        out.append("parked: " + ", ".join(s["parked"]))
     if s["launchable"]:
         n = s["slots"]
         out.append(f"ready to launch ({n} slot{'s' if n != 1 else ''} free): "
@@ -250,7 +260,7 @@ def show(plan: Plan, doc: dict[str, Any], iid: str, events: list[dict[str, Any]]
     if it.due:
         lines.append(f"  due {it.due}" + (f", estimate {it.estimate_days:g}d" if it.estimate_days else ""))
     for k in ("wid", "session", "pane", "worktree", "worker", "launched", "last_report",
-              "last_line", "stuck", "waiting", "stale", "reopened", "ask", "note"):
+              "last_line", "stuck", "waiting", "parked", "park_refusal", "stale", "reopened", "ask", "note"):
         if r.get(k):
             lines.append(f"  {k} {r[k]}")
     for e in r.get("evidence", [])[-3:]:

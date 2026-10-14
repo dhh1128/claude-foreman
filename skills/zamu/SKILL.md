@@ -78,6 +78,8 @@ When a worker finishes, run `zamu worker retire <wid>` unless you can name the i
 
 The cap on live workers comes from config; `zamu` refuses past it and ready items queue. Do not try to get round it by launching by hand.
 
+An idle worker can be parked after the configured delay: zamu closes its owned window and keeps its conversation, worktree, last report, ask IDs and dirty file list. The board shows `parked` without counting a slot. The watcher resumes it when its named asks have all left the open queue. For a wait with no named ask, the PM can resume it with `zamu resume <id> --unblocked "what changed"`; this uses normal launch admission and tells the worker what changed. Inspect `zamu show <id>` before deciding an unlabelled wait is over.
+
 ## Acting on attention
 
 - **Worker gone.** Its session ended before the item finished. If it was mid-work, `zamu launch --relaunch <id> --go` resumes the same conversation in a new window. If the item needs rethinking, `zamu mark <id> reset --note "<why>"` returns it to ready.

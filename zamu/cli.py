@@ -142,11 +142,49 @@ def _pane_pids() -> list[int] | None:
         return None
 
 
+def _pane_pid(pane: str) -> int | None:
+    try:
+        r = subprocess.run(["tmux", "display-message", "-p", "-t", pane, "#{pane_pid}"],
+                           capture_output=True, text=True, timeout=5)
+        return int(r.stdout.strip()) if r.returncode == 0 else None
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return None
+
+
+def _codex_session(tree: str, since: str) -> str | None:
+    """Find one Codex rollout started in this worktree after zamu launched it."""
+    import datetime as dt
+    try:
+        start = dt.datetime.fromisoformat(since)
+    except ValueError:
+        return None
+    root = Path(os.environ.get("CODEX_HOME", "~/.codex")).expanduser() / "sessions"
+    matches = set()
+    try:
+        for path in root.rglob("*.jsonl"):
+            if dt.datetime.fromtimestamp(path.stat().st_mtime, dt.timezone.utc) < start:
+                continue
+            with path.open() as f:
+                row = json.loads(f.readline())
+            if row.get("type") != "session_meta":
+                continue
+            meta = row.get("payload", {})
+            created = dt.datetime.fromisoformat(meta.get("timestamp", ""))
+            if meta.get("cwd") == tree and created >= start:
+                matches.add(meta.get("id") or meta.get("session_id"))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None
+    matches.discard(None)
+    return next(iter(matches)) if len(matches) == 1 else None
+
+
 def world() -> engine.World:
     from . import budgets, procs
     return engine.World(tmux_session=_tmux_session, pane_exists=_pane_exists,
                         pane_has_session=_pane_has_session,
                         scan=procs.scan, pane_activity=_pane_activity, pane_pids=_pane_pids,
+                        pane_pid=_pane_pid,
+                        codex_session=_codex_session,
                         budget_run=budgets.run)
 
 
@@ -245,6 +283,16 @@ def cmd_launch(args) -> int:
     if not args.go:
         print("# dry run: nothing was executed. Add --go to run these. (The session id is "
               "fresh on each launch.)")
+    return 0
+
+
+def cmd_resume(args) -> int:
+    plan, d = _load(args)
+    cfg, w = config.load(), world()
+    ln, = engine.prepare(plan, d, cfg, w, [args.item], parked=True,
+                         unblocked=args.unblocked or "")
+    got = engine.commit_launch(plan, d, cfg, w, ln)
+    print(f"resumed {args.item} in pane {got.get('pane', '?')}")
     return 0
 
 
@@ -482,6 +530,11 @@ def build_parser() -> argparse.ArgumentParser:
                    help="resume a dead worker's own conversation in a new window")
     s.add_argument("--go", action="store_true", help="execute; without it, only print")
     s.set_defaults(func=cmd_launch)
+    s = sub.add_parser("resume", help="resume a parked worker in its saved conversation")
+    plan_arg(s)
+    s.add_argument("item")
+    s.add_argument("--unblocked", metavar="WHY", help="PM says an unlabelled or unfiled wait is over")
+    s.set_defaults(func=cmd_resume)
     s = sub.add_parser("adopt", help="take on a worker that was started by hand")
     plan_arg(s)
     s.add_argument("item")

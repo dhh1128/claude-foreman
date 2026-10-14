@@ -13,6 +13,7 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import os
+import re
 import subprocess
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -56,6 +57,9 @@ class World:
     #: The pid of every tmux pane's process, or None when tmux cannot be asked. Anything under
     #: a pane is somebody's live session and is never reaped.
     pane_pids: Callable[[], "list[int] | None"] = lambda: None
+    pane_pid: Callable[[str], "int | None"] = lambda pane: None
+    merge_locked: Callable[[str], "bool | None"] | None = None
+    codex_session: Callable[[str, str], "str | None"] = lambda tree, since: None
     budget_run: Callable[[list[str]], tuple[int, str, str]] | None = None
 
 
@@ -128,6 +132,137 @@ def _rec(doc: dict[str, Any], iid: str) -> dict[str, Any]:
     return doc["items"].setdefault(iid, {})
 
 
+ASK_IDS = re.compile(r"\b[AQ]-[A-Z0-9]+\b")
+
+
+def _pane_tree(world: World, pane: str,
+               ps: list[procs_mod.Proc] | None) -> list[procs_mod.Proc] | None:
+    root = world.pane_pid(pane)
+    if root is None or ps is None:
+        return None
+    by_parent: dict[int, list[procs_mod.Proc]] = {}
+    for p in ps:
+        by_parent.setdefault(p.ppid, []).append(p)
+    out, todo, seen = [], [root], set()
+    while todo:
+        pid = todo.pop()
+        if pid in seen:
+            continue
+        seen.add(pid)
+        p = next((p for p in ps if p.pid == pid), None)
+        if p is not None:
+            out.append(p)
+        todo.extend(p.pid for p in by_parent.get(pid, []))
+    return out if out and out[0].pid == root else None
+
+
+def park_due(plan: Plan, plan_dir: Path, cfg: Config, world: World) -> list[str]:
+    """Park proved idle windows after a blocked report or sustained quiet pane and CPU."""
+    now = world.now()
+    changes = []
+    with store.locked(plan_dir):
+        doc = store.read(plan_dir)
+        processes: list[procs_mod.Proc] | None = None
+        scanned = False
+        for iid, it in plan.items.items():
+            rec = doc.get("items", {}).get(iid, {})
+            if graph.states(plan, doc)[iid] in graph.ACTIVE and not rec.get("ours"):
+                last = _parse(rec.get("last_report", ""))
+                if ((rec.get("waiting") or rec.get("stuck")) and last and
+                        (now - last).total_seconds() >= cfg.park_after_minutes * 60):
+                    rec["park_refusal"] = "window ownership and resume path are not proven"
+                else:
+                    rec.pop("park_refusal", None)
+                continue
+            if (graph.states(plan, doc)[iid] not in graph.ACTIVE or
+                    rec.get("worker") not in ("live", "starting") or not rec.get("ours") or
+                    not rec.get("pane") or not rec.get("worktree")):
+                continue
+            rec.pop("park_refusal", None)
+            pane = rec["pane"]
+            identity = rec.get("token") or rec.get("session")
+            if not identity or world.pane_has_session(pane, identity) is not True:
+                continue
+            if not scanned:
+                processes = world.scan()
+                scanned = True
+            tree = _pane_tree(world, pane, processes)
+            activity = world.pane_activity(pane)
+            if tree is None or activity is None:
+                continue
+            # The root shell and engine are expected. An extra process can be a merge/CI
+            # tool waiting on the world; an idle CPU reading must never hide that work.
+            signature = {p.key: p.cpu for p in tree}
+            previous = rec.get("park_sample", {})
+            since = (previous.get("since") if previous.get("cpu") == signature and
+                     previous.get("last_report") == rec.get("last_report") else _iso(now))
+            rec["park_sample"] = {"cpu": signature, "since": since,
+                                  "last_report": rec.get("last_report")}
+            if len(tree) > 2:
+                continue
+            stable = _parse(since)
+            if stable is None or (now - stable).total_seconds() < cfg.park_after_minutes * 60:
+                continue
+            blocked = rec.get("waiting") or rec.get("stuck")
+            last = _parse(rec.get("last_report", ""))
+            reported_long = bool(blocked and last and
+                                 (now - last).total_seconds() >= cfg.park_after_minutes * 60)
+            quiet_long = (graph.states(plan, doc)[iid] == "running" and last and
+                          (now - last).total_seconds() >= cfg.park_after_minutes * 60 and
+                          now.timestamp() - activity >= cfg.park_after_minutes * 60)
+            if not (reported_long or quiet_long):
+                continue
+            session = rec.get("session") if rec.get("engine", "claude") == "claude" else rec.get("codex_session")
+            if rec.get("engine") == "codex" and not session:
+                session = world.codex_session(rec["worktree"], rec.get("launched", ""))
+                if session:
+                    rec["codex_session"] = session
+            if not session or rec.get("engine", "claude") not in ("claude", "codex"):
+                rec["park_refusal"] = "no proven resumable conversation; keep the worker live"
+                continue
+            rec.pop("park_refusal", None)
+            locked = (world.merge_locked or world.coord.merge_locked)(it.repo)
+            if locked is not False:
+                continue
+            try:
+                rc, out, _err = world.run(["git", "-C", rec["worktree"], "status", "--porcelain",
+                                           "--untracked-files=all"])
+            except (OSError, subprocess.TimeoutExpired):
+                continue
+            if rc != 0:
+                continue
+            dirty = [line[3:] for line in out.splitlines() if len(line) >= 4]
+            reason = blocked or f"pane quiet and process tree idle for {cfg.park_after_minutes:g}m"
+            asks = sorted(set(ASK_IDS.findall(reason)))
+            open_asks = world.coord.open_asks(it.repo) if asks else None
+            try:
+                rc, _out, _err = world.run(["tmux", "kill-window", "-t", pane])
+            except (OSError, subprocess.TimeoutExpired):
+                continue
+            if rc != 0:
+                continue
+            prior_state = graph.states(plan, doc)[iid]
+            rec["state"] = "parked"
+            rec["worker"] = "parked"
+            rec.pop("park_refusal", None)
+            rec["parked"] = {"at": _iso(now), "reason": reason, "asks": asks,
+                             "asks_seen": sorted(set(asks) & open_asks) if open_asks is not None else [],
+                             "prior_state": prior_state,
+                             "last_report": rec.get("last_report", ""),
+                             "last_line": rec.get("last_line", ""), "dirty": dirty,
+                             "session": session, "engine": rec.get("engine", "claude"),
+                             "worktree": rec["worktree"]}
+            wid = rec.get("wid")
+            if wid in doc.get("workers", {}):
+                doc["workers"][wid]["worker"] = "parked"
+                doc["workers"][wid]["pane"] = ""
+            rec["pane"] = ""
+            changes.append(f"{iid} parked: {reason}")
+            _event(plan_dir, now, iid, "park", reason=reason, asks=asks, dirty=dirty)
+        store.write(plan_dir, doc)
+    return changes
+
+
 # --- pulse --------------------------------------------------------------------------------
 
 def _needs_oracle(it: Item, st: str) -> bool:
@@ -182,7 +317,7 @@ def _parse_report_line(raw: str) -> tuple[dt.datetime, str, str] | None:
 
 
 def pulse(plan: Plan, plan_dir: Path, cfg: Config, world: World,
-          oracles_due: bool = True) -> dict[str, Any]:
+          oracles_due: bool = True, notify_parks: bool = True) -> dict[str, Any]:
     """Check oracles and workers, file escalations, and return what changed.
 
     Oracles and session-coord are consulted outside the lock, because a slow `gh` would
@@ -327,6 +462,11 @@ def pulse(plan: Plan, plan_dir: Path, cfg: Config, world: World,
         pm = dict(doc.get("pm", {}))
     for outcome, line in messages:
         _message_pm(pm, world, plan.name, outcome, line)
+    parked = park_due(plan, plan_dir, cfg, world)
+    if notify_parks:
+        for change in parked:
+            _message_pm(pm, world, plan.name, change, change.partition(": ")[2])
+    changes += parked
     return {"changes": changes}
 
 
@@ -385,13 +525,16 @@ def _worker_identity(w: dict[str, Any]) -> tuple:
 def _idle_worker_proofs(plan: Plan, doc: dict[str, Any], world: World,
                         now: dt.datetime) -> dict[str, tuple[tuple, str]]:
     return {wid: (_worker_identity(w), _idle_worker_status(plan, w, world, now))
-            for wid, w in doc.get("workers", {}).items() if w.get("worker") != "retired"}
+            for wid, w in doc.get("workers", {}).items()
+            if w.get("worker") not in ("retired", "parked")}
 
 
 def _check_idle_workers(plan: Plan, plan_dir: Path, doc: dict[str, Any],
                         proofs: dict[str, tuple[tuple, str]], now: dt.datetime) -> None:
     sts = graph.states(plan, doc)
     for wid, w in doc.get("workers", {}).items():
+        if w.get("worker") == "parked":
+            continue
         if any(sts.get(i) in graph.ACTIVE for i in w.get("items", [])):
             continue
         proof = proofs.get(wid)
@@ -834,7 +977,8 @@ def admit(cfg: Config, world: World) -> tuple[bool | None, str]:
 
 
 def prepare(plan: Plan, plan_dir: Path, cfg: Config, world: World, ids: list[str],
-            relaunch: bool = False) -> list[launch_mod.Launch]:
+            relaunch: bool = False, parked: bool = False,
+            unblocked: str = "") -> list[launch_mod.Launch]:
     """The launches that would happen for `ids`, refusing anything the rules forbid."""
     doc = store.read(plan_dir)
     sts = graph.states(plan, doc)
@@ -858,7 +1002,29 @@ def prepare(plan: Plan, plan_dir: Path, cfg: Config, world: World, ids: list[str
                                  "External items wait on the world; zamu only polls them."))
         rec = doc["items"].get(iid, {})
         session = None
-        if relaunch:
+        changed = ""
+        if parked:
+            info = rec.get("parked", {})
+            if sts[iid] != "parked" or not info.get("session"):
+                raise EngineError(f"{iid} has no parked conversation to resume.")
+            asks = info.get("asks", [])
+            if not unblocked:
+                if not asks:
+                    raise EngineError(f"{iid} has no named asks; the PM must pass --unblocked WHY.")
+                if not set(asks) <= set(info.get("asks_seen", [])):
+                    raise EngineError(f"{iid}'s named asks were not observed open; pass --unblocked WHY after checking the wait.")
+                open_asks = world.coord.open_asks(it.repo)
+                if open_asks is None:
+                    raise EngineError(f"could not read the ask queue for {iid}; pass --unblocked WHY after checking it.")
+                held = set(asks) & open_asks
+                if held:
+                    raise EngineError(f"{iid} still waits on {', '.join(sorted(held))}.")
+            changed = unblocked or f"asks {', '.join(asks)} are no longer open"
+            session = info["session"]
+            if used >= cap:
+                raise EngineError(f"{used} of {cap} workers are live; {iid} waits for a slot.")
+            used += 1
+        elif relaunch:
             if sts[iid] not in graph.ACTIVE or not rec.get("session"):
                 raise EngineError(f"{iid} has no worker to relaunch (state {sts[iid]}).")
             if rec.get("worker") not in ("dead",):
@@ -871,7 +1037,12 @@ def prepare(plan: Plan, plan_dir: Path, cfg: Config, world: World, ids: list[str
             if used >= cap:
                 raise EngineError(f"{used} of {cap} workers are live; {iid} waits for a slot.")
             used += 1
-        selected = rec.get("engine") or it.engines[0] if relaunch else _choose(it, cfg, load, readings)[0]
+        selected = ((rec.get("engine") or it.engines[0]) if relaunch or parked else
+                    _choose(it, cfg, load, readings)[0])
+        if parked and selected:
+            chosen, why = budgets.choice((selected,), cfg, load, readings)
+            if chosen is None:
+                raise BusyError(f"{iid} waits to resume: {why}")
         if not selected:
             _chosen, reason = _choose(it, cfg, load, readings)
             if len(it.engines) == 1 and it.engines[0] not in cfg.engines:
@@ -891,7 +1062,9 @@ def prepare(plan: Plan, plan_dir: Path, cfg: Config, world: World, ids: list[str
                               + (f"; {'; '.join(caps)}" if caps else ""))
         if not relaunch:
             load[selected] = load.get(selected, 0) + 1
-        kept = rec.get("worktree", "") if relaunch else ""
+        kept = rec.get("worktree", "") if relaunch or parked else ""
+        if parked and not launch_mod.worktree_exists(kept):
+            raise EngineError(f"{iid}'s parked worktree {kept} is missing; refusing to recreate it.")
         if kept and not launch_mod.worktree_exists(kept):
             kept = ""
         wt = kept or f"{it.repo.rstrip('/')}/.worktrees/{it.topic}"
@@ -907,8 +1080,27 @@ def prepare(plan: Plan, plan_dir: Path, cfg: Config, world: World, ids: list[str
             claude=cfg.engines[selected], engine=selected,
             default_branch=default, worktree_exists=exists,
             branch_exists=False if exists else launch_mod.branch_exists(it.repo, it.topic, world.run),
-            session=session, worktree=kept))
+            session=session, worktree=kept, changed=changed, parked=parked))
     return out
+
+
+def ready_to_resume(plan: Plan, plan_dir: Path, cfg: Config, world: World) -> list[str]:
+    """Parked items whose named asks have all left the queue, subject to a free slot."""
+    doc = store.read(plan_dir)
+    used, cap = slots(plan, doc, cfg)
+    if used >= cap:
+        return []
+    out = []
+    for iid, it in plan.items.items():
+        rec = doc.get("items", {}).get(iid, {})
+        info = rec.get("parked", {})
+        if (graph.states(plan, doc)[iid] != "parked" or not info.get("asks") or
+                not set(info["asks"]) <= set(info.get("asks_seen", []))):
+            continue
+        asks = world.coord.open_asks(it.repo)
+        if asks is not None and not set(rec["parked"]["asks"]) & asks:
+            out.append(iid)
+    return out[:max(cap - used, 0)]
 
 
 def ready_to_fill(plan: Plan, plan_dir: Path, cfg: Config,
@@ -944,21 +1136,32 @@ def commit_launch(plan: Plan, plan_dir: Path, cfg: Config, world: World,
     with store.locked(config.home(), wait=120), store.locked(plan_dir):
         doc = store.read(plan_dir)
         used, cap = slots(plan, doc, cfg)
-        if not ln.resume and used >= cap:
+        was_parked = doc.get("items", {}).get(ln.item, {}).get("state") == "parked"
+        if ln.parked and (not was_parked or
+                          doc["items"][ln.item].get("parked", {}).get("session") != ln.session):
+            raise EngineError(f"{ln.item}'s parked conversation changed; prepare resume again.")
+        if (not ln.resume or was_parked) and used >= cap:
             raise EngineError(f"{used} of {cap} workers are live; {ln.item} waits for a slot.")
         engine = ln.engine if not ln.resume else (doc.get("items", {}).get(ln.item, {}).get("engine")
                                                   or ln.engine)
-        if not ln.resume:
+        if not ln.resume or was_parked:
             readings = _budget_readings(cfg, world, force=True, names=plan.items[ln.item].engines,
                                         locked=True)
-            chosen, why = _choose(plan.items[ln.item], cfg, engine_load(plan, doc), readings)
+            chosen, why = (budgets.choice((engine,), cfg, engine_load(plan, doc), readings)
+                           if was_parked else
+                           _choose(plan.items[ln.item], cfg, engine_load(plan, doc), readings))
             if chosen != engine:
                 raise BusyError(f"{ln.item} waits: engine choice changed ({why or chosen})")
+        if was_parked:
+            ok, why = admit(cfg, world)
+            if ok is False:
+                raise BusyError(f"the box is busy, so {ln.item} waits to resume: {why}")
         got = launch_mod.execute(ln, world.run)
         rec = _rec(doc, ln.item)
         rec["engine"] = engine
-        rec.update({"state": rec.get("state") if ln.resume or rec.get("state") in graph.ACTIVE
-                    else "running",
+        state = (rec.get("parked", {}).get("prior_state", "running") if was_parked else
+                 rec.get("state") if ln.resume or rec.get("state") in graph.ACTIVE else "running")
+        rec.update({"state": state,
                     "session": ln.session if engine == "claude" else ln.token,
                     "pane": got.get("pane", ""), "ours": True, "wid": rec.get("wid") or ln.item,
                     "worktree": ln.worktree, "launched": _iso(now), "last_report": _iso(now),
@@ -966,6 +1169,12 @@ def commit_launch(plan: Plan, plan_dir: Path, cfg: Config, world: World,
         if engine != "claude":
             rec["session"] = ""
             rec["token"] = ln.token
+            if was_parked and engine == "codex":
+                rec["codex_session"] = ln.session
+        if was_parked:
+            rec.pop("parked", None)
+            rec.pop("park_sample", None)
+            _clear_flags(rec)
         _register_worker(doc, rec["wid"], engine, rec.get("session", ""), rec["pane"],
                          ln.worktree, ln.item, ours=True, token=ln.token)
         rec["last_line"] = "relaunched" if ln.resume else "launched"
@@ -1023,7 +1232,7 @@ def worker_retire(plan: Plan, plan_dir: Path, world: World, wid: str) -> str:
         if w.get("worker") == "retired":
             raise EngineError(f"worker {wid} is already retired.")
         sts = graph.states(plan, doc)
-        active = [i for i in w.get("items", []) if sts.get(i) in graph.ACTIVE]
+        active = [i for i in w.get("items", []) if sts.get(i) in graph.ACTIVE + graph.PARKED]
         if active:
             raise EngineError(f"worker {wid} has active item(s) {', '.join(active)}; finish them first.")
         tree = w.get("worktree", "")
@@ -1082,6 +1291,8 @@ def assign(plan: Plan, plan_dir: Path, world: World, iid: str, wid: str, note: s
         if w is None:
             raise EngineError(f"no worker {wid!r}; register it with `zamu worker add`.")
         status = _idle_worker_status(plan, w, world, now)
+        if w.get("worker") == "parked":
+            raise EngineError(f"worker {wid} is parked; resume its item before assigning work.")
         if status in ("dead", "retired") or (status == "unknown" and
                                              (w.get("worker") == "dead" or
                                               (w.get("items") and (w.get("pane") or w.get("session"))))):

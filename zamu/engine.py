@@ -713,8 +713,8 @@ def _record_launch_holds(plan: Plan, plan_dir: Path, doc: dict[str, Any], cfg: C
                       if any(e in cfg.engines and (e not in cfg.engine_caps or
                              load.get(e, 0) < cfg.engine_caps[e])
                              for e in plan.items[iid].engines))
-    else:
-        wanted.update((iid, "budget") for iid in budget_waiting(plan, doc, cfg, readings))
+    wanted.update((iid, "budget") for iid in budget_waiting(
+        plan, doc, cfg, readings, ignore_admission=True))
     prior = {(iid, reason) for iid, reasons in doc.get("friction_holds", {}).items()
              for reason in reasons}
     for iid, reason in sorted(wanted - prior):
@@ -730,9 +730,10 @@ def _record_launch_holds(plan: Plan, plan_dir: Path, doc: dict[str, Any], cfg: C
         doc.pop("friction_holds", None)
 
 
-def budget_waiting(plan: Plan, doc: dict[str, Any], cfg: Config, readings: dict) -> list[str]:
-    """Items held solely by budget, not by a count or engine configuration."""
-    if doc.get("admission", {}).get("ok") is False:
+def budget_waiting(plan: Plan, doc: dict[str, Any], cfg: Config, readings: dict,
+                   *, ignore_admission: bool = False) -> list[str]:
+    """Items held by budget, with admission optionally ignored for friction accounting."""
+    if not ignore_admission and doc.get("admission", {}).get("ok") is False:
         return []
     used, cap = slots(plan, doc, cfg)
     if used >= cap:
@@ -1457,7 +1458,8 @@ def _apply_report(plan: Plan, plan_dir: Path, doc: dict[str, Any], iid: str, sta
     if evidence:
         _add_evidence(doc, rec, evidence, "worker report", now)
     _event(plan_dir, now, iid, "report", state=state, line=line, outcome=outcome,
-           pane=pane, **({"evidence": evidence} if evidence else {}))
+           pane=pane, from_pm=bool(pane and doc.get("pm", {}).get("pane") == pane),
+           **({"evidence": evidence} if evidence else {}))
     return outcome
 
 

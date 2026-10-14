@@ -76,7 +76,7 @@ def test_portfolio_friction_counts_week_and_previous_week(tmp_path, monkeypatch)
         ("2026-10-13T14:00:00+00:00", "launch_hold", {"reason": "admission", "state": "end"}),
         ("2026-10-14T09:00:00+00:00", "launch_hold", {"reason": "budget", "state": "start"}),
         ("2026-10-14T10:00:00+00:00", "launch_hold", {"reason": "budget", "state": "end"}),
-        ("2026-10-14T10:00:00+00:00", "report", {"pane": "%1"}),
+        ("2026-10-14T10:00:00+00:00", "report", {"pane": "%1", "from_pm": True}),
         ("2026-10-14T10:00:00+00:00", "verify", {"ok": False}),
         ("2026-10-14T10:00:00+00:00", "wait_nag", {}),
     ]
@@ -164,3 +164,59 @@ def test_admission_hold_excludes_item_already_blocked_by_engine_cap(tmp_path):
                  engine_caps={"codex": 0}, escalate="none")
     engine.pulse(plan, d, cfg, World(now=lambda: NOW, run=lambda argv: (75, "busy", "")))
     assert [e["item"] for e in store.events(d) if e["what"] == "launch_hold"] == ["a"]
+
+
+def test_admission_and_budget_holds_are_both_recorded(tmp_path):
+    d = tmp_path / "plan"
+    d.mkdir()
+    (d / "plan.toml").write_text('[plan]\n[items.a]\nkind="build"\ntitle="A"\nrepo="/repo"\noracle="manual"\n')
+    plan = load(d / "plan.toml", name="plan")
+    admission, budget = [75], [75]
+    world = World(now=lambda: NOW, run=lambda argv: (admission[0], "busy", ""),
+                  budget_run=lambda argv: (budget[0], "{}", ""))
+    cfg = Config(admission=("headroom",), budgets={"claude": ("probe",)},
+                 budget_refresh_minutes=0, escalate="none")
+    engine.pulse(plan, d, cfg, world)
+    assert {(e["reason"], e["state"]) for e in store.events(d) if e["what"] == "launch_hold"} == {
+        ("admission", "start"), ("budget", "start")}
+    admission[0] = 0
+    engine.pulse(plan, d, cfg, world)
+    assert sorted((e["reason"], e["state"]) for e in store.events(d) if e["what"] == "launch_hold") == [
+        ("admission", "end"), ("admission", "start"), ("budget", "start")]
+    budget[0] = 0
+    engine.pulse(plan, d, cfg, world)
+    assert sorted((e["reason"], e["state"]) for e in store.events(d) if e["what"] == "launch_hold") == [
+        ("admission", "end"), ("admission", "start"), ("budget", "end"), ("budget", "start")]
+
+
+@pytest.mark.parametrize("event", [
+    {"what": "adopt"}, {"what": "launch"}, {"what": "report", "state": "done"}])
+def test_unended_hold_closes_at_next_item_state_change(tmp_path, event):
+    d = tmp_path / "plan"
+    d.mkdir()
+    rows = [
+        {"t": "2026-10-14T08:00:00+00:00", "item": "a", "what": "launch_hold",
+         "reason": "budget", "state": "start"},
+        {"t": "2026-10-14T08:30:00+00:00", "item": "a", "what": "worker", "worker": "live"},
+        {"t": "2026-10-14T09:00:00+00:00", "item": "a", **event},
+    ]
+    (d / "events.jsonl").write_text("".join(json.dumps(row) + "\n" for row in rows))
+    from zamu import friction
+    current = friction.totals([d], NOW)["this_week"]
+    assert current["budget_holds"] == 1
+    assert current["budget_hours"] == 1
+
+
+def test_report_records_pm_identity_at_report_time(tmp_path):
+    d = tmp_path / "plan"
+    d.mkdir()
+    (d / "plan.toml").write_text('[plan]\n[items.a]\nkind="external"\ntitle="A"\noracle="manual"\n')
+    (d / "state.json").write_text(json.dumps({"items": {}, "pm": {"pane": "%7"}}))
+    plan = load(d / "plan.toml", name="plan")
+    engine.report(plan, d, World(now=lambda: NOW, pane=lambda: "%7"), "a", "running", "PM update")
+    with store.transaction(d) as doc:
+        doc["pm"]["pane"] = "%8"
+    event = store.events(d)[0]
+    assert event["from_pm"] is True
+    from zamu import friction
+    assert friction.totals([d], NOW)["this_week"]["pm_reports"] == 1

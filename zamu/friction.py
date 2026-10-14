@@ -18,6 +18,15 @@ def _at(raw: str) -> dt.datetime | None:
         return None
 
 
+def _advances_item(ev: dict) -> bool:
+    """A ready item's next state change ends any unresolved launch hold."""
+    what = ev.get("what")
+    return (what in ("adopt", "assign", "launch", "relaunch", "mark") or
+            what == "report" and ev.get("state") in ("running", "review", "done") or
+            what == "oracle" and ev.get("ok") is True or
+            what == "verify" and ev.get("ok") is True)
+
+
 def totals(plan_dirs: list, now: dt.datetime) -> dict:
     week = (now - dt.timedelta(days=now.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
     previous = week - dt.timedelta(days=7)
@@ -26,7 +35,6 @@ def totals(plan_dirs: list, now: dt.datetime) -> dict:
     unknown = False
     for d in plan_dirs:
         try:
-            pm = store.read(d).get("pm", {}).get("pane", "")
             events = store.events(d)
         except (store.StoreError, OSError):
             unknown = True
@@ -39,6 +47,9 @@ def totals(plan_dirs: list, now: dt.datetime) -> dict:
                 continue
             bucket = "this_week" if week <= at < end else "previous_week" if previous <= at < week else None
             what, item = ev.get("what"), ev.get("item", "")
+            if item and _advances_item(ev):
+                for key in [key for key in holds if key[0] == item]:
+                    _hours(buckets, key[1] + "_hours", holds.pop(key), at, previous, week, end)
             if what == "worker":
                 if ev.get("worker") == "dead":
                     dead.add(item)
@@ -64,7 +75,7 @@ def totals(plan_dirs: list, now: dt.datetime) -> dict:
                 buckets[bucket]["adopted"] += 1
             elif what == "wait_nag":
                 buckets[bucket]["nagged_waits"] += 1
-            elif what == "report" and pm and ev.get("pane") == pm:
+            elif what == "report" and ev.get("from_pm") is True:
                 buckets[bucket]["pm_reports"] += 1
             elif what == "verify" and ev.get("ok") is False:
                 buckets[bucket]["verify_reopens"] += 1

@@ -148,6 +148,9 @@ def summary(plan: Plan, doc: dict[str, Any], cfg: Config, now: dt.datetime) -> d
     eligible = []
     for iid in launch:
         it = plan.items[iid]
+        if doc.get('priority_wait', {}).get(iid):
+            waiting.append(f"{iid} (ready, waits for slot taken by higher-priority plan "
+                           f"{doc['priority_wait'][iid]})")
         selected, reason = engine._choose(it, cfg, load, readings)
         if selected:
             try:

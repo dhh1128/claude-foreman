@@ -6,11 +6,10 @@ Waiting inside a process costs nothing; waiting inside a model turn costs tokens
 made a polling PM inefficient (Daniel, 2026-10-12: "A foreman that I have to prod to do
 something isn't very helpful").
 
-So the watcher does the mechanical part and the PM does the judgement. Each tick, for every
-plan (or one):
+So the watcher does the mechanical part and the PM does the judgement. Each all-plan tick:
 
 - `pulse`, with oracles and pins only every `oracle_interval`, since they can call `gh` or git;
-- on a plan with `autolaunch = true`, fill free slots from the ready set;
+- allocate free slots across autolaunch plans, serving reserves and priorities first;
 - turn the board's attention lines into stable keys, and message the PM through session-coord
   only about what is new since the last message: launches, items that changed state, and new
   attention. Busy admission has an episode key: it repeats only after an admission succeeds
@@ -36,7 +35,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-from . import config, engine, render, store
+from . import config, engine, graph, render, store
 from .launch import LaunchError
 from .plan import PlanError, load
 
@@ -88,7 +87,8 @@ def world_for(doc: dict[str, Any], cfg: config.Config,
 
 
 def tick(plan_dir: Path, cfg: config.Config, base_world: Callable[[], engine.World],
-         oracles_due: bool, notify: bool = True) -> Tick:
+         oracles_due: bool, notify: bool = True, *, launch: bool = True,
+         finish: bool = True) -> Tick:
     try:
         plan = load(plan_dir / "plan.toml", name=plan_dir.name)
     except PlanError as e:
@@ -100,7 +100,7 @@ def tick(plan_dir: Path, cfg: config.Config, base_world: Callable[[], engine.Wor
     t.changes += engine.pulse(plan, plan_dir, cfg, w, oracles_due=oracles_due,
                               notify_parks=False)["changes"]
 
-    if plan.autolaunch:
+    if launch and plan.autolaunch:
         for iid in engine.ready_to_resume(plan, plan_dir, cfg, w):
             try:
                 (ln,) = engine.prepare(plan, plan_dir, cfg, w, [iid], parked=True)
@@ -119,6 +119,14 @@ def tick(plan_dir: Path, cfg: config.Config, base_world: Callable[[], engine.Wor
                 pass  # a later reading refused; next tick will reconsider admission
             except (config.ConfigError, engine.EngineError, LaunchError, OSError) as e:
                 t.errors.append(f"could not launch {iid}: {e}")
+
+    if finish:
+        finish_tick(t, plan, plan_dir, cfg, w, notify)
+    return t
+
+
+def finish_tick(t: Tick, plan, plan_dir: Path, cfg: config.Config,
+                w: engine.World, notify: bool) -> None:
 
     # The PM's own liveness is useful state, but telling that PM it is alive wakes it for no work.
     t.changes += [change for change in engine.check_pm(plan, plan_dir, cfg, w)
@@ -145,7 +153,99 @@ def tick(plan_dir: Path, cfg: config.Config, base_world: Callable[[], engine.Wor
         ok, why = w.coord.msg(pm["repo"], pm["target"], t.digest())
         if not ok:
             t.errors.append(f"could not message the PM: {why}")
-    return t
+
+
+def cycle(ref: str | None, cfg: config.Config, base_world: Callable[[], engine.World],
+          oracles_due: bool, notify: bool = True) -> list[Tick]:
+    """Pulse every plan, then allocate this tick's free slots across all ready work."""
+    if ref:
+        ticks = []
+        for d in plan_dirs(ref):
+            try:
+                ticks.append(tick(d, cfg, base_world, oracles_due, notify))
+            except (store.StoreError, TimeoutError, OSError) as e:
+                ticks.append(Tick(d.name, errors=[str(e)]))
+        return ticks
+    entries = []
+    for d in plan_dirs(None):
+        try:
+            t = tick(d, cfg, base_world, oracles_due, False, launch=False, finish=False)
+            plan = load(d / "plan.toml", name=d.name) if not t.errors else None
+            w = world_for(store.read(d), cfg, base_world) if plan else None
+            entries.append((d, plan, w, t))
+        except (store.StoreError, TimeoutError, OSError) as e:
+            entries.append((d, None, None, Tick(d.name, errors=[str(e)])))
+
+    failed: set[tuple[str, str]] = set()
+    launched_engines: set[str] = set()
+    while True:
+        candidates = []
+        for d, plan, w, t in entries:
+            if not plan or not plan.autolaunch or w is None:
+                continue
+            try:
+                doc = store.read(d)
+                ready = engine.ready_to_fill(plan, d, cfg, w, all_candidates=True)
+            except (store.StoreError, TimeoutError, OSError) as e:
+                t.errors.append(str(e))
+                continue
+            own = len([i for i, st in graph.states(plan, doc).items() if st in graph.ACTIVE])
+            for iid in ready:
+                if (plan.name, iid) in failed:
+                    continue
+                selected, _ = engine._choose(plan.items[iid], cfg, engine.engine_load(plan, doc),
+                                             engine._budget_readings(cfg, w) if cfg.budgets else {})
+                if cfg.budgets and selected in launched_engines:
+                    continue
+                since = engine._parse(doc['items'].get(iid, {}).get('ready_since', ''))
+                candidates.append((own < cfg.reserve.get(plan.name, 0),
+                                   cfg.priority.get(plan.name, 0), since or w.now(),
+                                   plan.name, iid, d, plan, w, t, selected))
+        if not candidates:
+            break
+        candidates.sort(key=lambda c: (-int(c[0]), -c[1], c[2], c[3], c[4]))
+        _, _, _, name, iid, d, plan, w, t, selected = candidates[0]
+        try:
+            (ln,) = engine.prepare(plan, d, cfg, w, [iid])
+            got = engine.commit_launch(plan, d, cfg, w, ln)
+            t.launched.append(f"{iid} (pane {got.get('pane', '?')})")
+            if selected:
+                launched_engines.add(selected)
+        except engine.BusyError:
+            failed.add((name, iid))
+        except (engine.EngineError, LaunchError, OSError) as e:
+            t.errors.append(f"could not launch {iid}: {e}")
+            failed.add((name, iid))
+        if cfg.admission:
+            break  # load from a launch is not visible to admission until the next tick
+
+    holders = []
+    for d, plan, _, _ in entries:
+        if plan:
+            try:
+                doc = store.read(d)
+            except (store.StoreError, OSError):
+                continue
+            if any(st in graph.ACTIVE for st in graph.states(plan, doc).values()):
+                holders.append(plan.name)
+    for d, plan, w, t in entries:
+        if plan is None or w is None:
+            continue
+        # Explain a full machine by the highest-priority plan currently holding a slot.
+        try:
+            with store.transaction(d) as doc:
+                wait = {}
+                winner = next((name for name in sorted(holders,
+                               key=lambda n: (-cfg.priority.get(n, 0), n))
+                               if cfg.priority.get(name, 0) > cfg.priority.get(plan.name, 0)), "")
+                used, _ = engine.slots(plan, doc, cfg)
+                if winner and used >= cfg.max_workers:
+                    wait = {iid: winner for iid in graph.launchable(plan, graph.states(plan, doc))}
+                doc['priority_wait'] = wait
+            finish_tick(t, plan, d, cfg, w, notify)
+        except (store.StoreError, TimeoutError, OSError) as e:
+            t.errors.append(str(e))
+    return [t for _, _, _, t in entries]
 
 
 def plan_dirs(ref: str | None) -> list[Path]:
@@ -201,11 +301,7 @@ def run(ref: str | None, interval: float, oracle_interval: float, once: bool,
             if due:
                 last_oracles = time.monotonic()
             news = []
-            for d in plan_dirs(ref):
-                try:
-                    t = tick(d, cfg, base_world, due, notify=not exit_on_news)
-                except (store.StoreError, TimeoutError, OSError) as e:
-                    t = Tick(d.name, errors=[str(e)])
+            for t in cycle(ref, cfg, base_world, due, notify=not exit_on_news):
                 if t.news:
                     log(t.digest())
                     news.append(t.digest())

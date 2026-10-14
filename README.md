@@ -93,6 +93,7 @@ zamu board                  the compact status a waking PM reads
 zamu portfolio [--json]     one compact board across every plan on this box
 zamu feedback --plan <p> "<text>"   record a field observation
 zamu feedback --list [--since YYYY-MM-DD]   list observations
+zamu priority [<plan> <n> | --reserve <plan> <slots>]  show or set box scheduling order
 zamu pulse                  check oracles and workers, escalate decisions, print the board
 zamu launch --ready         what would launch now; prints the exact commands, runs nothing
 zamu launch --ready --go    create worktrees, open tmux windows, start workers
@@ -141,11 +142,19 @@ launch_grace_minutes = 3
 tmux_session = ""          # default: the session zamu is run from
 claude = ["claude"]        # the command that starts a worker, with any flags it needs
 escalate = "session-coord" # or "none"
+
+[priority]
+roadmap = 5              # higher goes first; unlisted plans default to 0
+
+[reserve]
+roadmap = 1              # desired minimum slots while it has ready work
 ```
 
 Workers are started by tmux, not by your interactive shell, so a shell function or alias that adds flags to `claude` does not apply to them. Put the flags in `claude` (or under `[engines]`). Choose them knowingly: a worker runs unattended, so a permission prompt stalls it where nobody sees, while a flag that skips permissions or a sandbox lets it act unreviewed. zamu defaults to neither.
 
 A worker that reports `waiting` or `stuck`, or whose pane and process tree stay idle, is parked after `park_after_minutes`. Its window closes, but its session, worktree, dirty file list, last report and ask IDs remain in state. Parked items use no slot. Under autolaunch, the watcher resumes a parked worker when named asks it saw open at parking have all left the queue; for an unlabelled or unfiled wait, the PM can run `zamu resume <id> --unblocked "what changed"`. Resume uses the worker's saved conversation and the usual slot, admission and engine budget checks.
+
+The all-plan watcher pulses every plan before allocating free slots. It serves plans below their reserves first, then higher priorities, breaking ties by the oldest ready item. Priority never stops a running worker. Use `zamu priority` to inspect the order, `zamu priority <plan> <n>` to set a priority, or `zamu priority --reserve <plan> <slots>` to set a reserve. Changes are logged with the actor in `~/.config/zamu/priority.jsonl`.
 
 Engine budgets can be measured with optional commands in `~/.config/zamu/config.toml`:
 

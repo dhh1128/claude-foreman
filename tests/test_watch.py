@@ -304,3 +304,62 @@ def test_an_admission_command_that_cannot_run_falls_back_to_the_count(tmp_path):
     t = watch.tick(d, config.load(), broken, oracles_due=True)
     assert len(t.launched) == 1
     assert any("admission unknown, count cap only" in a for a in t.attention)
+
+
+def _other_plan(tmp_path, name, count=1):
+    d = config.plans_dir() / name
+    d.mkdir(parents=True)
+    body = '[plan]\nautolaunch = true\n'
+    for n in range(count):
+        make_repo(tmp_path, f'{name}{n}')
+        body += (f'[items.i{n}]\ntitle="Item {n}"\nkind="build"\n'
+                 f'repo="{tmp_path / "repos" / f"{name}{n}"}"\noracle="manual"\n')
+    (d / 'plan.toml').write_text(body)
+    return d
+
+
+def test_watch_fills_three_plans_in_priority_order(tmp_path):
+    low = _other_plan(tmp_path, 'low')
+    middle = _other_plan(tmp_path, 'middle')
+    high = _other_plan(tmp_path, 'high')
+    cfg = config.Config(max_workers=2, priority={'high': 9, 'middle': 4})
+    ticks = watch.cycle(None, cfg, _world(FakeCoord(), []), False, notify=False)
+    assert {t.plan for t in ticks if t.launched} == {'high', 'middle'}
+    assert not store.read(low)['items'].get('i0', {}).get('state')
+    assert store.read(high)['items']['i0']['state'] == 'running'
+    assert store.read(middle)['items']['i0']['state'] == 'running'
+
+
+def test_reserve_beats_higher_priority_and_never_preempts(tmp_path):
+    high = _other_plan(tmp_path, 'high', 2)
+    reserved = _other_plan(tmp_path, 'reserved')
+    cfg = config.Config(max_workers=2, priority={'high': 10}, reserve={'reserved': 1})
+    watch.cycle(None, cfg, _world(FakeCoord(), []), False, notify=False)
+    assert store.read(reserved)['items']['i0']['state'] == 'running'
+    assert sum(r.get('state') == 'running' for r in store.read(high)['items'].values()) == 1
+    # A later priority change does not displace either running worker.
+    changed = config.Config(max_workers=2, priority={'reserved': 100}, reserve={'reserved': 2})
+    watch.cycle(None, changed, _world(FakeCoord(), []), False, notify=False)
+    assert sum(r.get('state') == 'running' for r in store.read(high)['items'].values()) == 1
+    assert store.read(reserved)['items']['i0']['state'] == 'running'
+
+
+def test_equal_priority_uses_oldest_ready_item(tmp_path):
+    older = _other_plan(tmp_path, 'zolder')
+    newer = _other_plan(tmp_path, 'anewer')
+    with store.transaction(older) as doc:
+        doc['items'].setdefault('i0', {})['ready_since'] = (T0 - dt.timedelta(days=1)).isoformat()
+    with store.transaction(newer) as doc:
+        doc['items'].setdefault('i0', {})['ready_since'] = T0.isoformat()
+    ticks = watch.cycle(None, config.Config(max_workers=1), _world(FakeCoord(), []), False, notify=False)
+    assert [t.plan for t in ticks if t.launched] == ['zolder']
+
+
+def test_board_names_plan_that_took_priority_slot(tmp_path):
+    from zamu import render
+    low = _other_plan(tmp_path, 'low')
+    _other_plan(tmp_path, 'high')
+    cfg = config.Config(max_workers=1, priority={'high': 10})
+    watch.cycle(None, cfg, _world(FakeCoord(), []), False, notify=False)
+    board = render.board(watch.load(low / 'plan.toml', 'low'), store.read(low), cfg, T0)
+    assert 'i0 (ready, waits for slot taken by higher-priority plan high)' in board

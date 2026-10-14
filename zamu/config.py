@@ -32,9 +32,14 @@ another machine does not know this one's.
 from __future__ import annotations
 
 import os
+import json
+import re
 import tomllib
+import datetime as dt
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from . import store
 
 DEFAULT_MAX_WORKERS = 3
 
@@ -94,6 +99,10 @@ class Config:
     models: dict[str, dict[str, ModelSpec]] = field(default_factory=dict)
     budget_refresh_minutes: float = 10.0
     budget_ask_minutes: float = 60.0
+    #: Box-level plan preference. Higher priority receives free slots first.
+    priority: dict[str, int] = field(default_factory=dict)
+    #: Minimum desired slots for a plan while it has ready build work.
+    reserve: dict[str, int] = field(default_factory=dict)
 
     def __post_init__(self):
         if "claude" not in self.engines:
@@ -202,9 +211,64 @@ def load() -> Config:
     for key in ("budget_refresh_minutes", "budget_ask_minutes", "park_after_minutes"):
         if not isinstance(kw.get(key, 10), (int, float)) or kw.get(key, 10) <= 0:
             raise ConfigError(f"{key} must be positive.")
+    for key, minimum in (("priority", None), ("reserve", 0)):
+        values = kw.get(key, {})
+        if not isinstance(values, dict) or any(
+            not isinstance(name, str) or not name or not isinstance(value, int)
+            or isinstance(value, bool) or (minimum is not None and value < minimum)
+            for name, value in values.items()
+        ):
+            kind = "an integer" if minimum is None else "a non-negative integer"
+            raise ConfigError(f"[{key}] maps a plan name to {kind}.")
     if kw.get("escalate", "session-coord") not in ("session-coord", "none"):
         raise ConfigError("escalate must be \"session-coord\" or \"none\".")
     return Config(**kw)
+
+
+def _write_table(body: str, table: str, values: dict[str, int]) -> str:
+    """Replace one top-level TOML table while retaining unrelated config and comments."""
+    lines = body.splitlines(keepends=True)
+    header = re.compile(r"^\s*\[([^]]+)\]\s*(?:#.*)?$")
+    start = next((i for i, line in enumerate(lines) if (m := header.match(line))
+                  and m.group(1) == table), None)
+    rendered = [f"[{table}]\n"] + [f"{json.dumps(name)} = {value}\n"
+                                      for name, value in sorted(values.items())]
+    if start is None:
+        return body.rstrip("\n") + ("\n\n" if body.strip() else "") + "".join(rendered)
+    end = next((i for i in range(start + 1, len(lines)) if header.match(lines[i])), len(lines))
+    return "".join(lines[:start] + rendered + lines[end:])
+
+
+def set_plan_weight(plan: str, value: int, *, reserve_slots: bool = False,
+                    who: str = "") -> Config:
+    """Set one box preference with a lock, atomic config write, and append-only audit line."""
+    if plan not in known_plans():
+        raise ConfigError(f"no plan named {plan!r}. Known: {', '.join(known_plans()) or 'none'}.")
+    if isinstance(value, bool) or not isinstance(value, int) or (reserve_slots and value < 0):
+        raise ConfigError("reserve must be non-negative integer slots." if reserve_slots else
+                          "priority must be an integer.")
+    table = "reserve" if reserve_slots else "priority"
+    p = config_path()
+    with store.locked(p.parent):
+        before = load()
+        values = dict(getattr(before, table))
+        old = values.get(plan, 0)
+        values[plan] = value
+        try:
+            body = p.read_text()
+        except FileNotFoundError:
+            body = ""
+        new_body = _write_table(body, table, values)
+        # Parse before replacing the live file, including any unrelated tables.
+        tomllib.loads(new_body)
+        with open(p.parent / "priority.jsonl", "a") as audit:
+            audit.write(json.dumps({"at": dt.datetime.now(dt.timezone.utc).isoformat(),
+                                    "who": who or env("USER") or os.environ.get("USER", "unknown"),
+                                    "plan": plan, "field": table, "old": old, "new": value}) + "\n")
+            audit.flush()
+            os.fsync(audit.fileno())
+        store._write_atomic(p, new_body)
+    return load()
 
 
 def resolve_plan_dir(ref: str | None) -> Path:

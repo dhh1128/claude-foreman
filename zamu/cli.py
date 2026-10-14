@@ -218,6 +218,29 @@ def cmd_plans(args) -> int:
     return 0
 
 
+def cmd_priority(args) -> int:
+    actor = config.env("USER") or os.environ.get("USER") or engine.user_name()
+    if args.reserve:
+        plan, number = args.reserve
+        if args.name is not None or args.value is not None:
+            raise ConfigError("set a priority or a reserve in one command, not both.")
+        try:
+            slots = int(number)
+        except ValueError:
+            raise ConfigError("reserve must be non-negative integer slots.") from None
+        config.set_plan_weight(plan, slots, reserve_slots=True, who=actor)
+    elif args.name is not None:
+        if args.value is None:
+            raise ConfigError("give an integer priority after the plan name.")
+        config.set_plan_weight(args.name, int(args.value), who=actor)
+    cfg = config.load()
+    names = sorted(set(config.known_plans()) | set(cfg.priority) | set(cfg.reserve),
+                   key=lambda name: (-cfg.priority.get(name, 0), name))
+    for name in names:
+        print(f"{name}: priority {cfg.priority.get(name, 0)}, reserve {cfg.reserve.get(name, 0)}")
+    return 0
+
+
 def cmd_check(args) -> int:
     plan, d = _load(args)
     print(f"plan {plan.name} OK: {len(plan.items)} items, {d / 'plan.toml'}")
@@ -547,6 +570,12 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(func=cmd_init)
     s = sub.add_parser("plans", help="list plans")
     s.set_defaults(func=cmd_plans)
+    s = sub.add_parser("priority", help="show or set box-level plan priority and slot reserves")
+    s.add_argument("name", nargs="?", help="plan to prioritize")
+    s.add_argument("value", nargs="?", type=int, help="integer priority; higher goes first")
+    s.add_argument("--reserve", nargs=2, metavar=("PLAN", "SLOTS"),
+                   help="set a plan's slot reserve")
+    s.set_defaults(func=cmd_priority)
     s = sub.add_parser("check", help="validate the plan file")
     plan_arg(s)
     s.set_defaults(func=cmd_check)

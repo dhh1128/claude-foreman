@@ -1153,7 +1153,7 @@ def ready_to_resume(plan: Plan, plan_dir: Path, cfg: Config, world: World) -> li
 
 
 def ready_to_fill(plan: Plan, plan_dir: Path, cfg: Config,
-                  world: World | None = None) -> list[str]:
+                  world: World | None = None, *, all_candidates: bool = False) -> list[str]:
     """Ready build items that fit the free slots. With an admission command, at most one, and
     only if the box admits it: a launch does not load the box until the worker gets going, so
     filling every slot on one reading would admit them all against the same idle moment."""
@@ -1182,6 +1182,10 @@ def ready_to_fill(plan: Plan, plan_dir: Path, cfg: Config,
                 continue
             usable.append(iid)
     ready = usable
+    ready.sort(key=lambda i: (_parse(doc['items'].get(i, {}).get('ready_since', ''))
+                              or dt.datetime.max.replace(tzinfo=dt.timezone.utc), i))
+    if all_candidates:
+        return ready
     return ready[:1] if cfg.admission or cfg.budgets else ready[:max(cap - used, 0)]
 
 

@@ -585,7 +585,8 @@ def dashboard(data: dict[str, Any], scope: str | None) -> str:
     for p in data["plans"]:
         counts = ", ".join(f"{n} {labels[s]}" for s, n in p["counts"].items() if n)
         lines.append(f"{p['name']}: {counts}; PM {p['pm']}; {p['waits']} waiting on Daniel")
-    waits = [w for w in data["waiting"] if selected(w["id"])]
+    waits = sorted((w for w in data["waiting"] if selected(w["id"])),
+                   key=lambda w: (-w["unblocks"], w["id"]))
     lines.append("Waiting on Daniel:")
     lines.extend(f"  {w['id']} {w['ask'] or '-'} (+{w['unblocks']}) {w['text']} — {w['window']}" for w in waits)
     if not waits:

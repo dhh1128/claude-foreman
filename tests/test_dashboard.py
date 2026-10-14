@@ -28,6 +28,16 @@ def test_dashboard_scopes_detail_but_counts_other_plans(tmp_path):
     assert "beta/decide Q-ONE" in portfolio.dashboard(data, None)
 
 
+def test_dashboard_ranks_waits_by_unblocked_items_then_id():
+    data = {"dashboard": {"now": NOW.isoformat(), "workers": [], "risks": [], "landed": [], "landed_unknown": []},
+            "plans": [], "errors": [], "waiting": [
+                {"id": "alpha/z", "ask": "Q-Z", "unblocks": 1, "text": "Low", "window": "me:alpha-prj"},
+                {"id": "alpha/b", "ask": "Q-B", "unblocks": 3, "text": "High B", "window": "me:alpha-prj"},
+                {"id": "alpha/a", "ask": "Q-A", "unblocks": 3, "text": "High A", "window": "me:alpha-prj"}]}
+    out = portfolio.dashboard(data, "alpha")
+    assert out.index("alpha/a Q-A") < out.index("alpha/b Q-B") < out.index("alpha/z Q-Z")
+
+
 def test_dashboard_shows_worker_git_pr_ci_and_named_window(tmp_path):
     root = config.plans_dir() / "alpha"
     root.mkdir(parents=True)

@@ -94,6 +94,7 @@ zamu portfolio [--json]     one compact board across every plan on this box
 zamu feedback --plan <p> "<text>"   record a field observation
 zamu feedback --list [--since YYYY-MM-DD]   list observations
 zamu priority [<plan> <n> | --reserve <plan> <slots>]  show or set box scheduling order
+zamu dashboard [--all]      Daniel's on-demand status for this plan, or every plan
 zamu pulse                  check oracles and workers, escalate decisions, print the board
 zamu launch --ready         what would launch now; prints the exact commands, runs nothing
 zamu launch --ready --go    create worktrees, open tmux windows, start workers
@@ -191,6 +192,8 @@ A probe prints one JSON object with optional `figure`, `used_pct`, `resets_at`, 
 `zamu portfolio` shows machine slots and engine caps, admission and budget readings, watcher health and each plan's last tick. Plan lines are sorted by live workers and show process tree RSS, sampled CPU%, estimated session usage by engine, PM status, autolaunch, nearest deadline risk and user waits. Claude spend is in weighted tokens (`wtok`), and Codex spend is in raw tokens (`tok`); `?` means the measurement could not be made, `~` marks an estimate, and `+?` means some worker logs could not be read alongside a measured amount. The board ranks open asks and waiting workers by unfinished downstream items, then names active repo and pin conflicts across plans. `--json` provides the same facts for tools.
 
 The portfolio also shows friction this week with changes from the previous UTC Monday to Sunday week: adopted hand-started workers, workers seen live after being gone, admission and budget holds with elapsed hours, waits crossing `nag_after`, reports filed from the PM pane, and verify reopens. It shows the three newest feedback observations. Feedback lives in `~/.local/state/zamu/feedback.jsonl`; the first feedback or portfolio read imports dated bullets from the old field notes once per bullet.
+
+`zamu dashboard` gives Daniel the open asks and waiting items, worker windows and progress, late chains, and items landed since local midnight. It shows one count and PM liveness line for every plan, then details for the resolved plan; `--all` shows details for all plans. Git and GitHub probes that cannot be read appear as `?`.
 
 House rules for the skill go in `~/.config/zamu/addendum.md` (or `ZAMU_ADDENDUM`), which the skill reads first and treats as more specific than itself.
 

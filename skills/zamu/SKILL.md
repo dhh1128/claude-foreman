@@ -5,6 +5,8 @@ description: Run a cross-repo plan of work as its project manager — hold the d
 
 # Running a plan with zamu
 
+When Daniel asks for status or a dashboard, run `zamu dashboard` and show him its output; use `--all` when he asks across plans.
+
 **First, once per session: run `zamu addendum`.** If it prints anything, those are this machine's local rules — the user's trackers, merge discipline and naming — and where they are more specific than this file, they win.
 
 ## What the PM does, and what it hands off

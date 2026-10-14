@@ -303,6 +303,16 @@ def cmd_feedback(args) -> int:
     return 0
 
 
+def cmd_dashboard(args) -> int:
+    from . import portfolio, procs
+    scope = None if args.all else _load(args)[0].name
+    w = world()
+    w.scan = procs.sample_cpu
+    data = portfolio.snapshot(config.load(), w, dashboard=True)
+    sys.stdout.write(portfolio.dashboard(data, scope))
+    return 0
+
+
 def cmd_pulse(args) -> int:
     plan, d = _load(args)
     cfg = config.load()
@@ -592,6 +602,10 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--since", help="show feedback since an ISO date or datetime")
     s.add_argument("text", nargs="?", help="observation to record")
     s.set_defaults(func=cmd_feedback)
+    s = sub.add_parser("dashboard", help="Daniel's on-demand terminal status")
+    plan_arg(s)
+    s.add_argument("--all", action="store_true", help="show detail for every plan")
+    s.set_defaults(func=cmd_dashboard)
     s = sub.add_parser("pulse", help="check oracles and workers, escalate, then print the board")
     plan_arg(s)
     s.set_defaults(func=cmd_pulse)

@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import json
 import math
+import re
+import subprocess
 import tomllib
+import datetime as dt
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
@@ -178,7 +181,7 @@ def _claude_settings() -> tuple[Path, dict | None]:
         doc = tomllib.loads(path.read_text())
     except FileNotFoundError:
         doc = {}
-    except (OSError, ValueError):
+    except (OSError, ValueError, subprocess.TimeoutExpired):
         return Path("~/.claude/projects").expanduser(), None
     projects = doc.get("projects", "~/.claude/projects")
     if not isinstance(projects, str):
@@ -192,8 +195,170 @@ def _claude_settings() -> tuple[Path, dict | None]:
     return Path(projects).expanduser(), factors
 
 
+def _window(doc: dict, name: str) -> str:
+    session = doc.get("pm", {}).get("tmux_session") or "?"
+    return f"{session}:{name}"
+
+
+def _worker_window(doc: dict, it, rec: dict, world: World, cache: dict[str, str]) -> str:
+    pane = rec.get("pane") or ""
+    if pane and pane not in cache:
+        found = _look(world, ["tmux", "display-message", "-p", "-t", pane,
+                              "#{session_name}:#{window_name}"])
+        cache[pane] = found if found and re.fullmatch(r"[^:\n]+:[^:\n]+", found) else "?"
+    if pane and cache[pane] != "?":
+        return cache[pane]
+    return _window(doc, it.topic) if rec.get("ours") else "?"
+
+
+def _look(world: World, argv: list[str]) -> str | None:
+    """A command's output, or None when the world could not be inspected."""
+    try:
+        rc, out, _ = world.run(argv)
+    except (OSError, ValueError):
+        return None
+    return out.strip() if rc == 0 else None
+
+
+def _repo_slug(remote: str | None) -> str | None:
+    if remote is None:
+        return None
+    match = re.fullmatch(r"(?:https://|ssh://git@|git@)github\.com[:/]([^/\s]+/[^/\s]+?)(?:\.git)?/?", remote)
+    return match.group(1) if match else None
+
+
+def _ci(checks: Any) -> str:
+    if not isinstance(checks, list):
+        return "?"
+    if not checks:
+        return "none"
+    states = []
+    for check in checks:
+        if not isinstance(check, dict):
+            return "?"
+        value = str(check.get("conclusion") or check.get("state") or check.get("status") or "").upper()
+        if value in ("FAILURE", "ERROR", "TIMED_OUT", "ACTION_REQUIRED", "CANCELLED"):
+            states.append("fail")
+        elif value in ("SUCCESS", "NEUTRAL", "SKIPPED"):
+            states.append("pass")
+        elif value:
+            states.append("pending")
+        else:
+            states.append("?")
+    return "fail" if "fail" in states else "pending" if "pending" in states else "?" if "?" in states else "pass"
+
+
+def _pr(world: World, worktree: str, topic: str) -> tuple[str, str, str]:
+    remote = _look(world, ["git", "-C", worktree, "remote", "get-url", "origin"])
+    slug = _repo_slug(remote)
+    if slug is None:
+        return "?", "?", "?"
+    raw = _look(world, ["gh", "pr", "list", "--repo", slug, "--head", topic,
+                        "--state", "all", "--json", "url,state,statusCheckRollup", "--limit", "1"])
+    if raw is None:
+        return "?", "?", "?"
+    try:
+        rows = json.loads(raw)
+        if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+            return "?", "?", "?"
+        if not rows:
+            return "none", "", ""
+        row = rows[0]
+        return str(row.get("url") or "?"), str(row.get("state") or "?").lower(), _ci(row.get("statusCheckRollup"))
+    except (ValueError, TypeError):
+        return "?", "?", "?"
+
+
+def _session_model(path: Path | None, engine_name: str) -> str | None:
+    if path is None:
+        return None
+    model = None
+    try:
+        with path.open(errors="replace") as fh:
+            for line in fh:
+                try:
+                    row = json.loads(line)
+                    payload = row.get("message", {}) if engine_name == "claude" else row.get("payload", {})
+                    candidate = payload.get("model") if isinstance(payload, dict) else None
+                    if isinstance(candidate, str) and candidate and candidate != "<synthetic>":
+                        model = candidate
+                except (ValueError, TypeError, AttributeError):
+                    continue
+    except OSError:
+        return None
+    return model
+
+
+def _model(cfg: Config, engine_name: str, rec: dict, log_model: str | None) -> str:
+    if rec.get("model"):
+        return str(rec["model"])
+    if log_model:
+        return log_model
+    argv = cfg.engines.get(engine_name, ())
+    for n, arg in enumerate(argv):
+        if arg in ("-m", "--model") and n + 1 < len(argv):
+            return argv[n + 1]
+        if arg.startswith("--model="):
+            return arg.partition("=")[2]
+    return "?"
+
+
+def _worker_detail(plan: Plan, it, rec: dict, doc: dict, cfg: Config, world: World,
+                   now: dt.datetime, log_model: str | None, windows: dict[str, str]) -> dict:
+    worktree = rec.get("worktree") or f"{it.repo.rstrip('/')}/.worktrees/{it.topic}"
+    branch = _look(world, ["git", "-C", worktree, "symbolic-ref", "--short", "HEAD"])
+    base = it.base or _look(world, ["git", "-C", worktree, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"])
+    if base and not base.startswith("origin/"):
+        base = "origin/" + base
+    fork = _look(world, ["git", "-C", worktree, "merge-base", "HEAD", base]) if base else None
+    commits = _look(world, ["git", "-C", worktree, "rev-list", "--count", f"{fork}..HEAD"]) if fork else None
+    porcelain = _look(world, ["git", "-C", worktree, "status", "--porcelain", "--untracked-files=normal"])
+    files = len(porcelain.splitlines()) if porcelain is not None else None
+    pr, pr_state, ci = _pr(world, worktree, branch or it.topic)
+    launched = engine._parse(rec.get("launched", ""))
+    age_hours = max(0, int((now - launched).total_seconds() // 3600)) if launched else None
+    return {"id": f"{plan.name}/{it.id}", "engine": rec.get("engine") or it.engines[0],
+            "model": _model(cfg, rec.get("engine") or it.engines[0], rec, log_model),
+            "window": _worker_window(doc, it, rec, world, windows), "age_hours": age_hours,
+            "last_report": rec.get("last_report") or "?", "last_line": rec.get("last_line") or "?",
+            "commits": int(commits) if commits and commits.isdigit() else None,
+            "files": files, "pr": pr, "pr_state": pr_state, "ci": ci}
+
+
+def _landed(plan: Plan, doc: dict, sts: dict[str, str], now: dt.datetime, world: World) -> list[dict] | None:
+    try:
+        events = store.events(plan.path.parent)
+    except (OSError, store.StoreError):
+        return None
+    midnight = now.astimezone().replace(hour=0, minute=0, second=0, microsecond=0)
+    completed = set()
+    for ev in events:
+        at = engine._parse(ev.get("t", ""))
+        iid = ev.get("item")
+        if iid not in plan.items or sts[iid] != "done" or at is None or at.astimezone() < midnight:
+            continue
+        if (ev.get("what") == "oracle" and ev.get("ok") is True) or \
+           (ev.get("what") == "mark" and ev.get("state") == "done") or \
+           (ev.get("what") == "report" and " done; oracle agrees" in ev.get("outcome", "")) or \
+           (ev.get("what") == "verify" and ev.get("ok") is True):
+            completed.add(iid)
+    out = []
+    for iid in sorted(completed):
+        it = plan.items[iid]
+        rec = doc.get("items", {}).get(iid, {})
+        reference = next((f"https://github.com/{spec[3:].replace('#', '/pull/')}" for spec in it.oracle if spec.startswith("pr:")), "")
+        if not reference:
+            match = re.search(r"https://\S+/pull/\d+", rec.get("last_line", ""))
+            reference = match.group(0) if match else ""
+        if not reference and it.repo:
+            reference = _look(world, ["git", "-C", it.repo, "rev-parse", "--short", it.topic]) or ""
+        out.append({"id": f"{plan.name}/{iid}", "reference": reference or "?"})
+    return out
+
+
 def snapshot(cfg: Config, world: World, *, claude_projects: Path | None = None,
-             codex_sessions: Path | None = None, claude_factors: dict | None = None) -> dict[str, Any]:
+             codex_sessions: Path | None = None, claude_factors: dict | None = None,
+             dashboard: bool = False) -> dict[str, Any]:
     now = world.now()
     entries, errors, unparsed, plan_dirs = [], [], [], []
     root = config.plans_dir()
@@ -229,7 +394,9 @@ def snapshot(cfg: Config, world: World, *, claude_projects: Path | None = None,
     saved = budgets.read() if cfg.budgets else {}
     readings = {e: (saved or {}).get(e, {"verdict": "unknown", "why": "no reading yet"}) for e in cfg.budgets}
     plans, waits, active_by_repo, pins = [], [], defaultdict(list), []
+    detail = {"now": now.isoformat(), "workers": [], "risks": [], "landed": [], "landed_unknown": []}
     for plan, doc, sts, ws in entries:
+        windows: dict[str, str] = {}
         counts = dict(Counter(sts.values()))
         by_engine = dict(Counter(w["engine"] for w in ws))
         rss = cpu = 0
@@ -237,6 +404,7 @@ def snapshot(cfg: Config, world: World, *, claude_projects: Path | None = None,
         unknown_rss = False
         unknown_spent = Counter()
         measured_spend = set()
+        log_models = {}
         for w in ws:
             r, c = resources[(plan.name, w["id"])]
             if r is None:
@@ -251,6 +419,8 @@ def snapshot(cfg: Config, world: World, *, claude_projects: Path | None = None,
                 path = next((v for k, v in files.items() if k.endswith(sid)), None)
             if path is None and w["engine"] == "codex":
                 path = _codex_rollout(codex_files, w["worktree"], w["launched"])
+            if dashboard:
+                log_models[w["id"]] = _session_model(path, w["engine"])
             amount = (_claude_spend(path, factors, w["launched"]) if w["engine"] == "claude" and factors is not None
                       else _codex_spend(path) if w["engine"] == "codex" else None) if path else None
             if amount is None:
@@ -276,8 +446,12 @@ def snapshot(cfg: Config, world: World, *, claude_projects: Path | None = None,
                   (ask or sts[iid] == "ready")):
                 text = it.question or it.title
             if text:
+                destination = (_worker_window(doc, it, rec, world, windows) if dashboard and
+                               (rec.get("wid") or rec.get("pane") or rec.get("session")) and rec.get("worker") != "dead"
+                               else _window(doc, f"{plan.name}-prj"))
                 waits.append({"id": f"{plan.name}/{iid}", "ask": ask, "text": text,
-                              "unblocks": _descendants(plan, sts, iid)})
+                              "unblocks": _descendants(plan, sts, iid),
+                              "window": destination})
         for name, pin in plan.pins.items():
             if pin.repo:
                 pins.append((plan.name, name, pin.repo))
@@ -290,12 +464,27 @@ def snapshot(cfg: Config, world: World, *, claude_projects: Path | None = None,
                     held.update(_downstream(plan, sts, iid))
             waits.append({"id": f"{plan.name}/budget", "ask": episode["ask"],
                           "text": episode.get("line") or "Choose a budget trade-off",
-                          "unblocks": len(held)})
+                          "unblocks": len(held), "window": _window(doc, f"{plan.name}-prj")})
         if pm_ask := doc.get("pm", {}).get("dead_ask"):
             waits.append({"id": f"{plan.name}/pm", "ask": pm_ask,
                           "text": f"Restart the {plan.name} PM",
-                          "unblocks": sum(st not in graph.FINAL for st in sts.values())})
+                          "unblocks": sum(st not in graph.FINAL for st in sts.values()),
+                          "window": _window(doc, f"{plan.name}-prj")})
         risk = graph.risks(plan, sts, now.date())
+        if dashboard:
+            for r in risk:
+                detail["risks"].append({"id": f"{plan.name}/{r.item}", "over_days": max(r.over_days, (now.date() - r.due).days),
+                                        "due": r.due.isoformat(), "chain": r.chain, "overdue": r.overdue})
+            for iid, it in plan.items.items():
+                rec = doc.get("items", {}).get(iid, {})
+                if sts[iid] in graph.ACTIVE and rec.get("worker") != "dead" and (rec.get("wid") or rec.get("pane") or rec.get("session")):
+                    detail["workers"].append(_worker_detail(plan, it, rec, doc, cfg, world, now,
+                                                             log_models.get(rec.get("wid") or iid), windows))
+            landed = _landed(plan, doc, sts, now, world)
+            if landed is None:
+                detail["landed_unknown"].append(plan.name)
+            else:
+                detail["landed"].extend(landed)
         pm = doc.get("pm", {})
         status = "?"
         if pm.get("repo") and pm.get("target"):
@@ -331,10 +520,13 @@ def snapshot(cfg: Config, world: World, *, claude_projects: Path | None = None,
         friction_data["feedback"] = feedback.list_feedback(limit=3)
     except (store.StoreError, OSError, TimeoutError):
         friction_data["feedback"] = None
-    return {"box": {"workers": workers, "used": len(all_workers) + len(extra), "cap": cfg.max_workers,
+    result = {"box": {"workers": workers, "used": len(all_workers) + len(extra), "cap": cfg.max_workers,
                     "engine_caps": cfg.engine_caps, "admission": admission, "admission_why": why,
                     "budgets": readings, "watcher": watcher}, "plans": plans, "waiting": waits,
             "conflicts": conflicts, "errors": errors, "friction": friction_data}
+    if dashboard:
+        result["dashboard"] = detail
+    return result
 
 
 def board(data: dict[str, Any]) -> str:
@@ -380,5 +572,46 @@ def board(data: dict[str, Any]) -> str:
         for row in fr["feedback"] or []:
             text = " ".join(row.get("text", "").split())
             lines.append(f"feedback {row['t'][:10]} {row.get('plan') or '-'}: {text[:90]}{'…' if len(text) > 90 else ''}")
+    lines.extend(f"{e['name']}: could not load ({e['error']})" for e in data["errors"])
+    return "\n".join(lines) + "\n"
+
+
+def dashboard(data: dict[str, Any], scope: str | None) -> str:
+    """Daniel's on-demand terminal view; scope is one plan or None for all plans."""
+    detail = data["dashboard"]
+    selected = lambda identifier: scope is None or identifier.startswith(scope + "/")
+    lines = [f"dashboard {scope or 'all'} ({detail['now'][:16]})"]
+    labels = {"done": "done", "running": "running", "review": "review", "ready": "ready", "blocked": "blocked", "abandoned": "abandoned"}
+    for p in data["plans"]:
+        counts = ", ".join(f"{n} {labels[s]}" for s, n in p["counts"].items() if n)
+        lines.append(f"{p['name']}: {counts}; PM {p['pm']}; {p['waits']} waiting on Daniel")
+    waits = [w for w in data["waiting"] if selected(w["id"])]
+    lines.append("Waiting on Daniel:")
+    lines.extend(f"  {w['id']} {w['ask'] or '-'} (+{w['unblocks']}) {w['text']} — {w['window']}" for w in waits)
+    if not waits:
+        lines.append("  none")
+    workers = [w for w in detail["workers"] if selected(w["id"])]
+    lines.append("Running:")
+    for w in workers:
+        age = f"{w['age_hours']}h" if w["age_hours"] is not None else "?"
+        commits = f"{w['commits']} commit{'s' if w['commits'] != 1 else ''}" if w["commits"] is not None else "commits ?"
+        files = f"{w['files']} file{'s' if w['files'] != 1 else ''}" if w["files"] is not None else "files ?"
+        pr = f"{w['pr']} ({w['pr_state']}, CI {w['ci']})" if w["pr"] not in ("?", "none") else w["pr"]
+        reported = w["last_report"][:16]
+        lines.append(f"  {w['id']} {w['engine']}/{w['model']} {w['window']} age {age}; reported {reported}: {w['last_line']}; {commits}, {files}; PR {pr}")
+    if not workers:
+        lines.append("  none")
+    risks = [r for r in detail["risks"] if selected(r["id"])]
+    lines.append("Late:")
+    lines.extend(f"  {r['id']} {r['over_days']}d over ({r['due']}): {' → '.join(r['chain'])}" for r in risks)
+    if not risks:
+        lines.append("  none")
+    landed = [r for r in detail["landed"] if selected(r["id"])]
+    lines.append("Landed today:")
+    lines.extend(f"  {r['id']} {r['reference']}" for r in landed)
+    unknown = [name for name in detail["landed_unknown"] if scope is None or name == scope]
+    lines.extend(f"  {name}: completion events unreadable" for name in unknown)
+    if not landed and not unknown:
+        lines.append("  none")
     lines.extend(f"{e['name']}: could not load ({e['error']})" for e in data["errors"])
     return "\n".join(lines) + "\n"

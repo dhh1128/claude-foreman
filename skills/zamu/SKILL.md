@@ -169,7 +169,7 @@ Weekly, or when Daniel asks:
 6. Tell Daniel what changed and what you filed, in a few lines.
 7. End by recording the review itself: `zamu feedback "portfolio review done <YYYY-MM-DD>"`. The next review starts reading from that entry.
 
-**Plan priority is box-level and never preempts.** When the box is short, priority decides which plan's ready work takes the next free slot, through the box-level levers: whether a plan has `autolaunch` on and how far its `max_workers` is lowered. It never stops, parks or kills another plan's running worker to make room. A running worker holds context that a restart throws away, and only an idle worker is parked.
+**Plan priority is box-level and never preempts.** It lives in the box config, not in any plan, and you set it with `zamu priority <plan> <n>` and `zamu priority --reserve <plan> <slots>`; `zamu priority` alone shows the order. The all-plan watcher fills free slots for plans below their reserve first, then by priority, then by the oldest ready item. Nothing stops, parks or kills a running worker to make room, because its context is lost on restart. Choosing the numbers is a portfolio decision, and Daniel's when plans compete for a short box; a PM does not raise its own plan.
 
 ### Retirement
 

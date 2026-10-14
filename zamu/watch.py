@@ -45,8 +45,16 @@ BUSY_REPEAT = dt.timedelta(hours=1)
 
 
 def key(line: str) -> str:
-    """An attention line with its numbers blanked, so an ageing wait is one key, not many."""
+    """Stable attention identity: a merge queue belongs to its repo, not its members."""
+    if line.startswith("merges queue in "):
+        return line.partition(": ")[0]
     return DIGITS.sub("#", line)
+
+
+def _report_wait(line: str, doc: dict[str, Any]) -> bool:
+    """The report notice has already delivered this waiting line to the PM."""
+    iid, sep, rest = line.partition(": waiting on the user, ")
+    return bool(sep and rest and doc.get("items", {}).get(iid, {}).get("waiting"))
 
 
 @dataclass
@@ -137,9 +145,22 @@ def finish_tick(t: Tick, plan, plan_dir: Path, cfg: config.Config,
         lines = render.summary(plan, doc, cfg, now)["attention"]
         watch_state = doc.setdefault("watch", {})
         seen = set(watch_state.get("notified", []))
-        current = {key(a): a for a in lines if not a.startswith(BUSY_LINE)}
-        t.attention = [a for k, a in current.items() if k not in seen]
+        current = {key(a): a for a in lines
+                   if not a.startswith(BUSY_LINE) and not _report_wait(a, doc)}
+        queues = graph.contention(plan, graph.states(plan, doc))
+        old_members = watch_state.get("merge_members", {})
+        t.attention = []
+        for k, a in current.items():
+            if k.startswith("merges queue in "):
+                repo = k.removeprefix("merges queue in ")
+                gained = set(queues[repo]) - set(old_members.get(repo, []))
+                # A pre-upgrade watcher may have recorded the old full-line key.
+                if gained and DIGITS.sub("#", a) not in seen:
+                    t.attention.append(a)
+            elif k not in seen:
+                t.attention.append(a)
         watch_state["notified"] = sorted(current)
+        watch_state["merge_members"] = queues
         if t.launched or doc.get("admission", {}).get("ok") is True:
             watch_state.pop("busy_notified_at", None)
         busy = next((a for a in lines if a.startswith(BUSY_LINE)), None)

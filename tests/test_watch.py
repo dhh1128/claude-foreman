@@ -101,24 +101,66 @@ def test_without_autolaunch_nothing_is_launched(tmp_path):
     assert t.launched == [] and not [a for a in ran if a[:2] == ["tmux", "new-window"]]
 
 
-def test_attention_is_sent_once_and_again_only_if_it_clears_and_returns(tmp_path):
+def test_waiting_report_reaches_pm_once_and_stays_on_board(tmp_path):
     d = _setup(tmp_path, autolaunch=False)
     plan = watch.load(d / "plan.toml", "p")
-    w0 = engine.World(now=lambda: T0)
-    engine.attach(d, w0, str(tmp_path), "pm-x")
-    engine.adopt(plan, d, w0, "i0", "s1", "", "", "")
     c, ran = FakeCoord(), []
+    w0 = engine.World(coord=c, now=lambda: T0, pane=lambda: "%2")
+    engine.attach(d, w0, str(tmp_path), "pm-x", pane="%1")
+    engine.adopt(plan, d, w0, "i0", "s1", "", "", "")
     engine.report(plan, d, w0, "i0", "waiting", "approve decision node @abc")
-    c.msgs.clear()
+    assert len(c.msgs) == 1
     watch.tick(d, config.load(), _world(c, ran), oracles_due=False)
-    assert len(c.msgs) == 1 and "i0: waiting on the user" in c.msgs[0][2]
+    assert len(c.msgs) == 1
+    assert any("i0: waiting on the user" in a for a in
+               watch.render.summary(plan, store.read(d), config.load(), T0)["attention"])
     watch.tick(d, config.load(), _world(c, ran), oracles_due=False)
     assert len(c.msgs) == 1
     engine.report(plan, d, w0, "i0", "running", "approved")
     watch.tick(d, config.load(), _world(c, ran), oracles_due=False)
     engine.report(plan, d, w0, "i0", "waiting", "approve the second node")
     watch.tick(d, config.load(), _world(c, ran), oracles_due=False)
-    assert "approve the second node" in c.msgs[-1][2]
+    assert len(c.msgs) == 2 and "approve the second node" in c.msgs[-1][2]
+
+
+def test_pm_waiting_report_does_not_echo_back_from_watcher(tmp_path):
+    d = _setup(tmp_path, autolaunch=False, items=1)
+    plan = watch.load(d / "plan.toml", "p")
+    c, ran = FakeCoord(), []
+    pm_world = engine.World(coord=c, now=lambda: T0, pane=lambda: "%1")
+    engine.attach(d, pm_world, str(tmp_path), "pm-x", pane="%1")
+    engine.adopt(plan, d, pm_world, "i0", "s1", "", "", "")
+    engine.report(plan, d, pm_world, "i0", "waiting", "Daniel must choose")
+    watch.tick(d, config.load(), _world(c, ran), oracles_due=False)
+    assert c.msgs == []
+
+
+def test_merge_queue_notifies_only_for_new_members(tmp_path):
+    d = _setup(tmp_path, autolaunch=False)
+    plan_file = d / "plan.toml"
+    plan_file.write_text(plan_file.read_text().replace(str(tmp_path / "repos" / "r1"),
+                                                  str(tmp_path / "repos" / "r0")).replace(
+                                                      str(tmp_path / "repos" / "r2"),
+                                                      str(tmp_path / "repos" / "r0")))
+    plan = watch.load(plan_file, "p")
+    c, ran = FakeCoord(), []
+    pm_world = engine.World(coord=c, now=lambda: T0, pane=lambda: "%1")
+    engine.attach(d, pm_world, str(tmp_path), "pm-x", pane="%1")
+    for n in range(3):
+        engine.adopt(plan, d, pm_world, f"i{n}", f"s{n}", "", "", "")
+    for n in (0, 1):
+        engine.report(plan, d, pm_world, f"i{n}", "review", f"PR {n}")
+    watch.tick(d, config.load(), _world(c, ran), oracles_due=False)
+    assert len(c.msgs) == 1 and "merges queue" in c.msgs[-1][2]
+    engine.report(plan, d, pm_world, "i2", "review", "PR 2")
+    watch.tick(d, config.load(), _world(c, ran), oracles_due=False)
+    assert len(c.msgs) == 2 and "i0, i1, i2" in c.msgs[-1][2]
+    engine.report(plan, d, pm_world, "i0", "running", "queued elsewhere")
+    watch.tick(d, config.load(), _world(c, ran), oracles_due=False)
+    assert len(c.msgs) == 2
+    engine.report(plan, d, pm_world, "i0", "review", "PR 0")
+    watch.tick(d, config.load(), _world(c, ran), oracles_due=False)
+    assert len(c.msgs) == 3
 
 
 def test_numbers_in_attention_do_not_make_it_new():

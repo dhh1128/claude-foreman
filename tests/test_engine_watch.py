@@ -77,6 +77,22 @@ def test_a_quiet_pane_is_flagged_unless_the_worker_said_it_is_waiting(tmp_path):
     assert not any("pane quiet" in a for a in att)
 
 
+def test_waiting_and_parked_items_do_not_stall(tmp_path):
+    plan = _setup(tmp_path)
+    old = (T0 - dt.timedelta(hours=5)).isoformat()
+    with store.transaction(tmp_path) as doc:
+        doc["items"]["a"].update(last_report=old, waiting="Daniel must choose")
+        doc["items"].setdefault("b", {}).update(state="parked", last_report=old,
+                                                parked={"reason": "waiting on Daniel"})
+    doc = store.read(tmp_path)
+    assert engine.stalled(plan, doc, Config(), T0) == []
+    assert not any("no report" in line for line in
+                   render.summary(plan, doc, Config(), T0)["attention"])
+    with store.transaction(tmp_path) as doc:
+        doc["items"]["a"].pop("waiting")
+    assert engine.stalled(plan, store.read(tmp_path), Config(), T0) == ["a"]
+
+
 def test_reap_kills_only_what_no_live_worker_can_own(tmp_path):
     plan = _setup(tmp_path)
     ps = [Proc(901, 1, WT, 5, 7, "pytest", ""),

@@ -1685,7 +1685,8 @@ def stalled(plan: Plan, doc: dict[str, Any], cfg: Config, now: dt.datetime) -> l
     for iid in plan.items:
         rec = doc["items"].get(iid, {})
         last = _parse(rec.get("last_report", ""))
-        if sts[iid] == "running" and last and now - last > dt.timedelta(hours=cfg.stall_hours):
+        if (sts[iid] == "running" and not rec.get("waiting") and last and
+                now - last > dt.timedelta(hours=cfg.stall_hours)):
             out.append(iid)
     return out
 

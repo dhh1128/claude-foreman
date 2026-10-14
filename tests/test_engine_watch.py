@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import datetime as dt
 from dataclasses import replace
+from pathlib import Path
 
-from zamu import engine, render, store
+from zamu import cli, engine, render, store
 from zamu.config import Config
 from zamu.coord import Coord
 from zamu.plan import parse
@@ -34,11 +35,12 @@ def _setup(tmp_path):
     return plan
 
 
-def _world(t, ps, activity=None, panes=()):
+def _world(t, ps, activity=None, panes=(), capture=None):
     aged = None if ps is None else [replace(p, age_minutes=60) if not p.age_minutes else p for p in ps]
     return engine.World(coord=NoCoord(), now=lambda: t, scan=lambda: aged,
                         pane_pids=lambda: None if panes is None else list(panes),
-                        pane_activity=lambda p: activity, pane_has_session=lambda p, s: True)
+                        pane_activity=lambda p: activity, pane_has_session=lambda p, s: True,
+                        pane_capture=lambda p: capture)
 
 
 def test_an_orphaned_suite_is_reported_with_its_idleness_and_owner(tmp_path):
@@ -91,6 +93,40 @@ def test_waiting_and_parked_items_do_not_stall(tmp_path):
     with store.transaction(tmp_path) as doc:
         doc["items"]["a"].pop("waiting")
     assert engine.stalled(plan, store.read(tmp_path), Config(), T0) == ["a"]
+
+
+def test_quiet_pane_quotes_last_worker_line_from_visible_capture(tmp_path):
+    plan = _setup(tmp_path)
+    quiet_since = (T0 - dt.timedelta(minutes=50)).timestamp()
+    fixture = Path(__file__).parent / "fixtures" / "quiet_pane.txt"
+    capture = fixture.read_text().replace(r"\x1b", "\x1b")
+    engine.pulse(plan, tmp_path, Config(), _world(T0, [], quiet_since, capture=capture))
+    att = render.summary(plan, store.read(tmp_path), Config(), T0)["attention"]
+    assert 'a: pane quiet 50m; it may be sitting at a prompt; last visible: "I\'m continuing with the acceptance tests."' in att
+
+
+def test_unreadable_or_chrome_only_pane_has_no_quote(tmp_path):
+    plan = _setup(tmp_path)
+    quiet_since = (T0 - dt.timedelta(minutes=50)).timestamp()
+    engine.pulse(plan, tmp_path, Config(),
+                 _world(T0, [], quiet_since, capture="Worker sentence\n❯ \n"))
+    for capture in (None, "❯ Try something\n────────────────\n"):
+        engine.pulse(plan, tmp_path, Config(), _world(T0, [], quiet_since, capture=capture))
+        att = render.summary(plan, store.read(tmp_path), Config(), T0)["attention"]
+        assert "a: pane quiet 50m; it may be sitting at a prompt" in att
+        assert not any("last visible:" in a for a in att)
+
+
+def test_pane_capture_reads_visible_screen_only_and_returns_none_on_failure(monkeypatch):
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append(argv)
+        return type("Result", (), {"returncode": 1, "stdout": "partial"})()
+
+    monkeypatch.setattr(cli.subprocess, "run", run)
+    assert cli._pane_capture("%5") is None
+    assert calls == [["tmux", "capture-pane", "-p", "-t", "%5"]]
 
 
 def test_reap_kills_only_what_no_live_worker_can_own(tmp_path):

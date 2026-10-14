@@ -1,0 +1,11 @@
+╭──────────────────────────────────────────────╮
+│  I checked the acceptance tests.             │
+│  I'm continuing with the acceptance tests.  │
+╰──────────────────────────────────────────────╯
+
+\x1b[2m✻ Worked for 2m 13s\x1b[0m
+────────────────────────────────────────────────
+❯ \x1b[2mTry "how does <filepath> work?"\x1b[0m
+────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle)
+  35% context left

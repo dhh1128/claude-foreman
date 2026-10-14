@@ -168,6 +168,12 @@ def test_numbers_in_attention_do_not_make_it_new():
         watch.key("g1: waiting on Sam 16d (nag after 14d)")
 
 
+def test_pane_quote_is_not_part_of_news_key():
+    first = 'g1: pane quiet 30m; it may be sitting at a prompt; last visible: "First line"'
+    second = 'g1: pane quiet 31m; it may be sitting at a prompt; last visible: "Changed line"'
+    assert watch.key(first) == watch.key(second)
+
+
 def test_exit_on_news_prints_and_exits_without_messaging(tmp_path, monkeypatch):
     monkeypatch.setenv("ZAMU_MAX_WORKERS", "1")
     d = _setup(tmp_path, items=1)

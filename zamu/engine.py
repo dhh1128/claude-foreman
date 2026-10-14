@@ -19,7 +19,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable
 
-from . import budgets, graph, launch as launch_mod, oracles, procs as procs_mod, store
+from . import budgets, graph, launch as launch_mod, oracles, pane as pane_mod, procs as procs_mod, store
 from .config import Config, ConfigError, ModelSpec
 from .coord import Coord
 from .plan import Item, Plan
@@ -54,6 +54,8 @@ class World:
     scan: Callable[[], "list[procs_mod.Proc] | None"] = lambda: None
     #: A pane's last activity as epoch seconds, or None when tmux cannot say.
     pane_activity: Callable[[str], "float | None"] = lambda pane: None
+    #: The visible screen only, or None when tmux could not capture it.
+    pane_capture: Callable[[str], "str | None"] = lambda pane: None
     #: The pid of every tmux pane's process, or None when tmux cannot be asked. Anything under
     #: a pane is somebody's live session and is never reaped.
     pane_pids: Callable[[], "list[int] | None"] = lambda: None
@@ -532,7 +534,7 @@ def pulse(plan: Plan, plan_dir: Path, cfg: Config, world: World,
         _record_nags(plan, plan_dir, doc, now)
         if cfg.escalate == "session-coord":
             changes += _escalate(plan, plan_dir, doc, sts, world, now)
-        _quiet_panes(plan, doc, sts, world)
+        _quiet_panes(plan, doc, sts, world, cfg, now)
         if cfg.admission and admission_can_block(plan, doc, cfg):
             ok, why = admit(cfg, world)
             doc["admission"] = {"ok": ok, "why": why, "at": _iso(now)}
@@ -749,13 +751,23 @@ def _leftovers(plan: Plan, plan_dir: Path, doc: dict[str, Any], sts: dict[str, s
             for f in new if "live worker in a deleted worktree" not in f.why]
 
 
-def _quiet_panes(plan: Plan, doc: dict[str, Any], sts: dict[str, str], world: World) -> None:
+def _quiet_panes(plan: Plan, doc: dict[str, Any], sts: dict[str, str], world: World,
+                 cfg: Config, now: dt.datetime) -> None:
     for iid in plan.items:
         rec = doc["items"].get(iid, {})
         if sts[iid] == "running" and rec.get("pane") and rec.get("worker") != "dead":
             t = world.pane_activity(rec["pane"])
             if t is not None:
                 rec["pane_activity"] = t
+            if t is not None and (now.timestamp() - t) / 60 >= cfg.pane_quiet_minutes:
+                capture = world.pane_capture(rec["pane"])
+                quote = pane_mod.last_visible_line(capture) if capture is not None else None
+                if quote:
+                    rec["pane_quote"] = quote
+                else:
+                    rec.pop("pane_quote", None)
+            else:
+                rec.pop("pane_quote", None)
 
 
 def _ready_since(plan: Plan, doc: dict[str, Any], sts: dict[str, str], now: dt.datetime) -> None:
@@ -1311,6 +1323,8 @@ def commit_launch(plan: Plan, plan_dir: Path, cfg: Config, world: World,
                     "pane": got.get("pane", ""), "ours": True, "wid": rec.get("wid") or ln.item,
                     "worktree": ln.worktree, "launched": _iso(now), "last_report": _iso(now),
                     "worker": "starting"})
+        rec.pop("pane_activity", None)
+        rec.pop("pane_quote", None)
         if engine != "claude":
             rec["session"] = ""
             rec["token"] = ln.token

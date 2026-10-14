@@ -128,6 +128,15 @@ def _pane_activity(pane: str) -> float | None:
         return None
 
 
+def _pane_capture(pane: str) -> str | None:
+    try:
+        r = subprocess.run(["tmux", "capture-pane", "-p", "-t", pane], capture_output=True,
+                           text=True, timeout=5)
+        return r.stdout if r.returncode == 0 else None
+    except (OSError, UnicodeError, subprocess.TimeoutExpired):
+        return None
+
+
 def _pane_pids() -> list[int] | None:
     try:
         r = subprocess.run(["tmux", "list-panes", "-a", "-F", "#{pane_pid}"], capture_output=True,
@@ -183,7 +192,8 @@ def world() -> engine.World:
     from . import budgets, procs
     return engine.World(tmux_session=_tmux_session, pane_exists=_pane_exists,
                         pane_has_session=_pane_has_session,
-                        scan=procs.scan, pane_activity=_pane_activity, pane_pids=_pane_pids,
+                        scan=procs.scan, pane_activity=_pane_activity, pane_capture=_pane_capture,
+                        pane_pids=_pane_pids,
                         pane_pid=_pane_pid,
                         codex_session=_codex_session,
                         budget_run=budgets.run)

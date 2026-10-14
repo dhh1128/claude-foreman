@@ -45,9 +45,11 @@ BUSY_REPEAT = dt.timedelta(hours=1)
 
 
 def key(line: str) -> str:
-    """Stable attention identity: a merge queue belongs to its repo, not its members."""
+    """Stable attention identity despite changing queue members, ages, or pane quotes."""
     if line.startswith("merges queue in "):
         return line.partition(": ")[0]
+    if ": pane quiet " in line:
+        line = line.split("; last visible: ", 1)[0]
     return DIGITS.sub("#", line)
 
 

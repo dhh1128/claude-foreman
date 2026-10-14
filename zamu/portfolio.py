@@ -110,37 +110,43 @@ def _workers(plan: Plan, doc: dict, sts: dict[str, str]) -> list[dict]:
     return list(out.values())
 
 
-def _resources(workers: list[tuple[str, dict]], ps: list[procs.Proc] | None) -> dict[str, tuple[int | None, float | None]]:
-    result = {f"{plan}/{w['id']}": (None, None) for plan, w in workers}
+def _resources(workers: list[tuple[str, dict]], ps: list[procs.Proc] | None) -> dict[tuple[str, str], tuple[int | None, float | None]]:
+    result = {(plan, w["id"]): (None, None) for plan, w in workers}
     if ps is None:
         return result
-    identities = {}
-    paths = {}
+    identities = defaultdict(set)
+    paths = defaultdict(set)
     for plan, w in workers:
-        key = f"{plan}/{w['id']}"
-        identities[w["id"]] = key
+        key = (plan, w["id"])
+        identities[w["id"]].add(key)
         if w["token"]:
-            identities[w["token"]] = key
+            identities[w["token"]].add(key)
         if w["session"]:
-            identities[w["session"]] = key
+            identities[w["session"]].add(key)
         if w["worktree"]:
-            paths[w["worktree"]] = key
+            paths[w["worktree"]].add(key)
     by_pid = {p.pid: p for p in ps}
     amounts = defaultdict(lambda: [0, 0.0, 0])
     for proc in ps:
-        p, seen, key, path_owner = proc, set(), None, None
+        p, seen, key, path_owner, ambiguous = proc, set(), None, None, set()
         while p.pid not in seen:
             seen.add(p.pid)
-            key = identities.get(procs.worker_id(p))
-            if key:
+            candidates = identities.get(procs.worker_id(p), set())
+            if len(candidates) == 1:
+                key = next(iter(candidates))
                 break
+            if candidates and not ambiguous:
+                ambiguous = candidates
             if path_owner is None:
-                path_owner = next((v for root, v in paths.items() if procs.under(p.path, root)), None)
+                matched = [owners for root, owners in paths.items() if procs.under(p.path, root)]
+                if matched:
+                    owners = set().union(*matched)
+                    path_owner = next(iter(owners)) if len(owners) == 1 else None
             p = by_pid.get(p.ppid)
             if p is None:
                 break
         if key is None:
-            key = path_owner
+            key = path_owner if not ambiguous or path_owner in ambiguous else None
         if key:
             a = amounts[key]
             a[0] += proc.rss_bytes
@@ -228,9 +234,10 @@ def snapshot(cfg: Config, world: World, *, claude_projects: Path | None = None,
         rss = cpu = 0
         spent = defaultdict(float)
         unknown_rss = False
-        unknown_spent = set()
+        unknown_spent = Counter()
+        measured_spend = set()
         for w in ws:
-            r, c = resources[f"{plan.name}/{w['id']}"]
+            r, c = resources[(plan.name, w["id"])]
             if r is None:
                 unknown_rss = True
             else:
@@ -246,8 +253,9 @@ def snapshot(cfg: Config, world: World, *, claude_projects: Path | None = None,
             amount = (_claude_spend(path, factors, w["launched"]) if w["engine"] == "claude" and factors is not None
                       else _codex_spend(path) if w["engine"] == "codex" else None) if path else None
             if amount is None:
-                unknown_spent.add(w["engine"])
+                unknown_spent[w["engine"]] += 1
             else:
+                measured_spend.add(w["engine"])
                 spent[w["engine"]] += amount
         for iid, it in plan.items.items():
             rec = doc.get("items", {}).get(iid, {})
@@ -284,10 +292,11 @@ def snapshot(cfg: Config, world: World, *, claude_projects: Path | None = None,
                           "unblocks": len(held)})
         if pm_ask := doc.get("pm", {}).get("dead_ask"):
             waits.append({"id": f"{plan.name}/pm", "ask": pm_ask,
-                          "text": f"Restart the {plan.name} PM", "unblocks": 0})
+                          "text": f"Restart the {plan.name} PM",
+                          "unblocks": sum(st not in graph.FINAL for st in sts.values())})
         risk = graph.risks(plan, sts, now.date())
         pm = doc.get("pm", {})
-        status = pm.get("status", "?")
+        status = "?"
         if pm.get("repo") and pm.get("target"):
             live = world.coord.live_target(pm["repo"], pm["target"])
             status = "live" if live is True else "dead" if live is False else "?"
@@ -299,8 +308,9 @@ def snapshot(cfg: Config, world: World, *, claude_projects: Path | None = None,
                       "workers": by_engine, "slots": len(ws), "share_pct": round(100 * len(ws) / cfg.max_workers),
                       "rss_bytes": None if unknown_rss else rss,
                       "cpu_pct": None if unknown_rss else round(cpu, 1),
-                      "spent": {e: None if e in unknown_spent else round(spent[e])
+                      "spent": {e: round(spent[e]) if e in measured_spend else None
                                 for e in by_engine},
+                      "spent_unknown": dict(unknown_spent),
                       "last_tick": doc.get("watch", {}).get("last_tick")})
     plans.sort(key=lambda p: (-p["slots"], -(p["rss_bytes"] or 0), p["name"]))
     waits.sort(key=lambda w: (-w["unblocks"], w["id"]))
@@ -336,7 +346,7 @@ def board(data: dict[str, Any]) -> str:
         held = ",".join(f"{e}:{n}" for e, n in sorted(p["workers"].items())) or "none"
         rss = "?" if p["rss_bytes"] is None else f"{p['rss_bytes'] / 1048576:.0f}M"
         cpu = "?" if p["cpu_pct"] is None else f"{p['cpu_pct']:g}%"
-        spent = ",".join(f"{e} {'?' if amount is None else '~' + str(amount) + ('wtok' if e == 'claude' else 'tok')}"
+        spent = ",".join(f"{e} {'?' if amount is None else '~' + str(amount) + ('wtok' if e == 'claude' else 'tok') + ('+?' if p['spent_unknown'].get(e) else '')}"
                          for e, amount in sorted(p["spent"].items())) or "-"
         tick = p["last_tick"][:16] if p["last_tick"] else "?"
         risk = p["risk"]

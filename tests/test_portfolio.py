@@ -3,6 +3,7 @@
 import datetime as dt
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 from zamu import config, portfolio, procs
 from zamu.config import Config
@@ -125,7 +126,7 @@ def test_adopted_worker_child_inherits_its_ancestors_worktree():
     worker = {"id": "adopted", "engine": "codex", "session": "", "token": "", "worktree": "/repo/.worktrees/adopted", "launched": ""}
     ps = [Proc(10, 1, worker["worktree"], 1, 1, "codex", rss_bytes=1000),
           Proc(11, 10, "/tmp", 1, 2, "pytest", rss_bytes=3000)]
-    assert portfolio._resources([("plan", worker)], ps)["plan/adopted"][0] == 4000
+    assert portfolio._resources([("plan", worker)], ps)[("plan", "adopted")][0] == 4000
 
 
 def test_user_waits_remain_visible_before_ask_is_filed(tmp_path):
@@ -160,3 +161,54 @@ def test_mixed_engine_spend_keeps_known_amount_when_other_log_is_missing(tmp_pat
     data = portfolio.snapshot(Config(), World(now=lambda: NOW, scan=lambda: [], run=lambda argv: (0, "active", "")), claude_projects=tmp_path / "missing", codex_sessions=sessions)
     assert data["plans"][0]["spent"] == {"claude": None, "codex": 25}
     assert "codex ~25tok" in portfolio.board(data)
+
+
+def test_pm_status_requires_a_live_check_this_snapshot(tmp_path):
+    root = config.plans_dir()
+    root.mkdir(parents=True)
+    d = plan(root, "alpha", '[items.decide]\nkind="decision"\ntitle="Decide"\n', state={"items": {}, "pm": {"status": "live"}})
+    world = World(now=lambda: NOW, scan=lambda: [], run=lambda argv: (0, "active", ""))
+    world.coord = SimpleNamespace(live_target=lambda repo, target: None)
+    data = portfolio.snapshot(Config(), world, claude_projects=tmp_path / "none", codex_sessions=tmp_path / "none")
+    assert data["plans"][0]["pm"] == "?"
+    (d / "state.json").write_text(json.dumps({"items": {}, "pm": {"status": "live", "repo": "/r", "target": "sid"}}))
+    assert portfolio.snapshot(Config(), world, claude_projects=tmp_path / "none", codex_sessions=tmp_path / "none")["plans"][0]["pm"] == "?"
+
+
+def test_dead_pm_ask_ranks_by_unfinished_plan_items(tmp_path):
+    root = config.plans_dir()
+    root.mkdir(parents=True)
+    items = '[items.done]\nkind="decision"\ntitle="Done"\nstate="done"\n[items.next]\nkind="decision"\ntitle="Next"\n[items.last]\nkind="decision"\ntitle="Last"\ndepends_on=["next"]\n'
+    plan(root, "alpha", items, state={"items": {}, "pm": {"dead_ask": "A-PM", "status": "dead"}})
+    data = portfolio.snapshot(Config(), World(now=lambda: NOW, scan=lambda: [], run=lambda argv: (0, "active", "")), claude_projects=tmp_path / "none", codex_sessions=tmp_path / "none")
+    pm_wait = next(w for w in data["waiting"] if w["id"] == "alpha/pm")
+    assert pm_wait["unblocks"] == 2
+
+
+def test_partial_claude_spend_keeps_measured_amount_and_marks_gap(tmp_path):
+    root = config.plans_dir()
+    root.mkdir(parents=True)
+    repo = str(tmp_path / "repo")
+    items = "".join(f'[items.{iid}]\nkind="build"\ntitle="{iid}"\nrepo="{repo}"\noracle="manual"\n' for iid in ("a", "b"))
+    state = {"items": {"a": {"state": "running", "wid": "a", "worker": "live", "engine": "claude", "session": "known"}, "b": {"state": "running", "wid": "b", "worker": "live", "engine": "claude", "session": "missing"}}, "pm": {}}
+    plan(root, "alpha", items, state=state)
+    projects = tmp_path / "projects"
+    projects.mkdir()
+    row = {"timestamp": NOW.isoformat(), "message": {"id": "m", "model": "claude-sonnet", "usage": {"input_tokens": 10}}}
+    (projects / "known.jsonl").write_text(json.dumps(row) + "\n")
+    data = portfolio.snapshot(Config(), World(now=lambda: NOW, scan=lambda: [], run=lambda argv: (0, "active", "")), claude_projects=projects, codex_sessions=tmp_path / "none", claude_factors={})
+    assert data["plans"][0]["spent"] == {"claude": 30}
+    assert data["plans"][0]["spent_unknown"] == {"claude": 1}
+    assert "claude ~30wtok+?" in portfolio.board(data)
+
+
+def test_same_worker_id_in_two_plans_keeps_process_ownership_separate():
+    a = {"id": "shared", "engine": "claude", "session": "", "token": "", "worktree": "/repo/.worktrees/a", "launched": ""}
+    b = {**a, "worktree": "/repo/.worktrees/b"}
+    ps = [Proc(10, 1, a["worktree"], 1, 1, "sh zamu-worker:shared", rss_bytes=1000),
+          Proc(11, 10, "/tmp", 1, 2, "pytest", rss_bytes=2000),
+          Proc(20, 1, b["worktree"], 1, 3, "sh zamu-worker:shared", rss_bytes=3000),
+          Proc(21, 20, "/tmp", 1, 4, "pytest", rss_bytes=4000)]
+    resources = portfolio._resources([("alpha", a), ("beta", b)], ps)
+    assert resources[("alpha", "shared")][0] == 3000
+    assert resources[("beta", "shared")][0] == 7000

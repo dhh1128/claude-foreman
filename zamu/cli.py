@@ -416,8 +416,8 @@ def cmd_assign(args) -> int:
     it = plan.items[args.item]
     rec = store.read(d)["items"][args.item]
     from .launch import worker_prompt
-    print("# Deliver this brief to the worker yourself (session-coord msg for a Claude "
-          "session, the pane for a Codex window, SendMessage for a subagent):")
+    print("# Deliver this brief with `zamu tell " + args.item +
+          " <text>` for a Claude or Codex worker, or SendMessage for a subagent:")
     print(worker_prompt(plan, it, rec.get("worktree", ""), False))
     return 0
 
@@ -453,6 +453,12 @@ def cmd_report(args) -> int:
     plan, d = _load(args)
     print(engine.report(plan, d, world(), args.item, args.state, args.line,
                         evidence=args.evidence or "", on=args.on or ""))
+    return 0
+
+
+def cmd_tell(args) -> int:
+    plan, d = _load(args)
+    print(engine.tell(plan, d, world(), args.item_or_wid, args.text))
     return 0
 
 
@@ -651,6 +657,11 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--evidence", help="where the proof lives: a path, a URL, a run id")
     s.add_argument("--on", help="waiting target: file path, ask id, pm, file:<path>, or ask:<id>")
     s.set_defaults(func=cmd_report)
+    s = sub.add_parser("tell", help="message a recorded worker through session-coord")
+    plan_arg(s)
+    s.add_argument("item_or_wid", help="item id or worker id")
+    s.add_argument("text", help="message to deliver")
+    s.set_defaults(func=cmd_tell)
     s = sub.add_parser("mark", help="close a manual item, abandon one, or reset it")
     plan_arg(s)
     s.add_argument("item")

@@ -1521,6 +1521,77 @@ def adopt(plan: Plan, plan_dir: Path, world: World, iid: str, session: str, pane
 
 # --- report, mark, attach -----------------------------------------------------------------
 
+def tell(plan: Plan, plan_dir: Path, world: World, item_or_wid: str, text: str) -> str:
+    """Deliver to a recorded worker through session-coord, with no direct-send fallback."""
+    if not text.strip():
+        raise EngineError("tell needs message text.")
+    doc = store.read(plan_dir)
+    if item_or_wid in plan.items:
+        iid = item_or_wid
+        it = plan.items[iid]
+        if it.kind != "build":
+            raise EngineError(f"{iid} is a {it.kind} item; it has no worker to tell.")
+        rec = doc.get("items", {}).get(iid, {})
+        wid = rec.get("wid") or iid
+        worker = doc.get("workers", {}).get(wid, {})
+        repo = it.repo
+        items = [iid]
+    else:
+        wid = item_or_wid
+        worker = doc.get("workers", {}).get(wid)
+        if worker is None:
+            raise EngineError(f"no item or worker {item_or_wid!r} in plan {plan.name!r}.")
+        items = [i for i in worker.get("items", []) if i in plan.items]
+        repos = {plan.items[i].repo for i in items}
+        if len(repos) != 1:
+            raise EngineError(f"worker {wid} has no single item repo on record; tell by item id.")
+        repo = repos.pop()
+        rec = doc.get("items", {}).get(items[-1], {})
+    if worker.get("worker") in ("dead", "retired", "parked") or rec.get("worker") in ("dead", "parked"):
+        raise EngineError(f"worker {wid} is {worker.get('worker') or rec.get('worker')}; it cannot receive a tell now.")
+    engine_name = rec.get("engine") or worker.get("engine", "")
+    session = rec.get("codex_session") or rec.get("session") or worker.get("session", "")
+    pane = rec.get("pane") or worker.get("pane", "")
+    if not repo or (not session and not pane):
+        raise EngineError(f"worker {wid} has no repo or session/pane identity on record.")
+
+    rows = world.coord.board(repo)
+    if rows is None:
+        raise EngineError(f"could not check session-coord registration for worker {wid}; nothing sent.")
+    # A session id survives window changes. Codex workers launched by zamu have a
+    # recorded pane but no session id until their rollout can be inspected.
+    if session:
+        matches = [row for row in rows if row.get("session_id") == session]
+        address = session
+    else:
+        matches = [row for row in rows if pane and row.get("pane") == pane]
+        address = pane
+    if len(matches) != 1 or (matches[0].get("engine") and matches[0]["engine"] != engine_name):
+        raise EngineError(f"worker {wid} is not registered with session-coord at its recorded identity; nothing sent.")
+    registered_pane = matches[0].get("pane", "")
+    worktree = rec.get("worktree") or worker.get("worktree", "")
+    if worktree and matches[0].get("workdir") and Path(matches[0]["workdir"]).resolve() != Path(worktree).resolve():
+        raise EngineError(f"worker {wid}'s registered worktree changed; nothing sent.")
+    if pane and registered_pane and registered_pane != pane:
+        raise EngineError(f"worker {wid}'s registered pane changed from {pane} to {registered_pane}; nothing sent.")
+    if pane:
+        exists = world.pane_exists(pane)
+        if exists is False:
+            raise EngineError(f"worker {wid}'s pane {pane} is gone; nothing sent.")
+        if exists is None:
+            raise EngineError(f"could not check pane {pane} for worker {wid}; nothing sent.")
+
+    ok, note = world.coord.msg(repo, address, text)
+    # A race after the board read can make session-coord's unregistered path return success
+    # for a direct send or held mail. Only its registered-inbox confirmation counts here.
+    if not ok or not note.startswith("filed for "):
+        raise EngineError(f"session-coord could not deliver to worker {wid}: {note or 'no inbox confirmation'}")
+    with store.locked(plan_dir):
+        for iid in items:
+            _event(plan_dir, world.now(), iid, "tell", wid=wid, text=text[:80])
+    return f"told {wid}: {note}"
+
+
 def _apply_report(plan: Plan, plan_dir: Path, doc: dict[str, Any], iid: str, state: str,
                   line: str, now: dt.datetime, verdict: oracles.Verdict | None,
                   evidence: str = "", pane: str = "", target: dict[str, Any] | None = None) -> str:

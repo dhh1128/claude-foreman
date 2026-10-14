@@ -113,7 +113,8 @@ class Coord:
         r = self._call(["msg", "--repo", repo, target, text])
         if r is None:
             return False, "session-coord could not be run"
-        return r[0] == 0, (r[2] or r[1]).strip()
+        rc, out, err = r
+        return rc == 0, ((out or err) if rc == 0 else (err or out)).strip()
 
     def open_asks(self, repo: str) -> set[str] | None:
         """Tags in the printed queue; None if the queue could not be read."""

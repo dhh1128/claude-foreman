@@ -106,6 +106,7 @@ zamu worker add <wid> --engine codex|subagent|claude [--pane] [--session]
 zamu worker list              show registered workers and their last checked status
 zamu worker retire <wid>      close an idle worker's proven window and clean worktree; keep its branch
 zamu assign <id> <wid>      give an item to a registered worker; prints its brief
+zamu tell [--plan <p>] <item|wid> "<text>"   message its recorded worker through session-coord
 zamu verify <id> [--ok EVIDENCE | --fail WHY]   after a pin moved
 zamu rules [--add TEXT --source ASK]   the plan's standing rules
 zamu report <id> <running|review|done|stuck|waiting> "<line>" [--on <target>]   for workers

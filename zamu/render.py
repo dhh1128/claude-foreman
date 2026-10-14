@@ -313,6 +313,9 @@ def show(plan: Plan, doc: dict[str, Any], iid: str, events: list[dict[str, Any]]
     if r.get("oracle"):
         lines.append(f"  oracle said {r['oracle'].get('ok')} at {r['oracle'].get('checked')}: "
                      f"{r['oracle'].get('detail')}")
+    last_tell = next((e for e in reversed(events) if e.get("what") == "tell"), None)
+    if last_tell:
+        lines.append(f"  last told {last_tell['t']}: {last_tell.get('text', '')}")
     if events:
         lines.append("  recent events:")
         for e in events[-8:]:

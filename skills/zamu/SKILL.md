@@ -74,13 +74,19 @@ zamu assign <item> <worker>     # prints the brief; you deliver it
 
 zamu watches what each kind allows: session-coord's board for a Claude session, the pane for a window, nothing for a subagent — report for it yourself. The board lists idle workers so you can reuse one before starting another. An item can name its engine (`engine = "codex"`) or an ordered preference list (`engine = ["codex", "claude"]`); `launch` starts the first engine whose cap and measured budget admit it. Budget waits and unknown readings appear on the board. The PM changes an item's preference list in `plan.toml` when Daniel chooses that trade-off.
 
-When a worker finishes, run `zamu worker retire <wid>` unless you can name the item it will take next soon. Reuse earns the worker's RAM only when that next item is in sight. Retirement closes a window only when its recorded token or session id proves ownership, removes its clean linked worktree, keeps its branch, and records the retirement. If the pane is still there but ownership cannot be proved, close it manually before retiring. A dirty worktree must be committed or cleaned first. A dead worker is never assignable; register or launch a live worker instead.
+Idle workers are parked or retired, never kept warm on speculation. When a worker finishes, run `zamu worker retire <wid>` unless you can name the item it will take next soon. Reuse earns the worker's RAM only when that next item is in sight. Retirement closes a window only when its recorded token or session id proves ownership, removes its clean linked worktree, keeps its branch, and records the retirement. If the pane is still there but ownership cannot be proved, close it manually before retiring. A dirty worktree must be committed or cleaned first. A dead worker is never assignable; register or launch a live worker instead.
 
 **A worker someone already started by hand** is adopted rather than relaunched, so zamu watches it like its own: find its session id with `session-coord board --repo <repo> --json`, then `zamu adopt <id> --session <sid> --pane <%N> --worktree <where it works>`. Nothing is launched.
 
 The cap on live workers comes from config; `zamu` refuses past it and ready items queue. Do not try to get round it by launching by hand.
 
 An idle worker can be parked after the configured delay: zamu closes its owned window and keeps its conversation, worktree, last report, ask IDs and dirty file list. The board shows `parked` without counting a slot. The watcher resumes it when its named asks have all left the open queue. For a wait with no named ask, the PM can resume it with `zamu resume <id> --unblocked "what changed"`; this uses normal launch admission and tells the worker what changed. Inspect `zamu show <id>` before deciding an unlabelled wait is over.
+
+## Review and landing
+
+**Every diff gets a review from a model that is not Claude** before it lands, because Claude reviewing Claude's work shares its blind spots. Rotate the seats across rounds and items rather than using one reviewer for everything; on Daniel's box that is `git diff origin/main...origin/<branch> | panel -m <seat>` over `ds`, `glm`, `kimi`, `qwen` and `gemini`. Check that each answer finished (`finish_reason` is `stop`) before trusting it, since a truncated review exits cleanly. Relay the real findings to the worker; the review rounds are execution, so the worker runs the fixes. Stop when the findings are about inputs nobody produces, and file those as ticks rather than another round.
+
+**Landing order is your call.** When several cleared branches wait in one repo, you decide which lands first, from what depends on what and which rebase is cheapest; it is not a question for Daniel. A worker told to wait its turn reports `running "queued to land after <items>"`, not `waiting`: `waiting` means Daniel owes a decision, and the board shows it to him as his.
 
 ## Acting on attention
 
@@ -120,6 +126,58 @@ A fallback that should only be raised if a wait drags on is a `decision` with `a
 
 The plan is `plan.toml`, written by hand; `zamu check` validates it, and every verb refuses a plan with a cycle, a dangling dependency or a malformed oracle. You may edit it — add an item the work turned up, fix an oracle, add a dependency you discovered — and say in one line what you changed. Do not delete items that have state; mark them abandoned, so their dependents show as stranded rather than silently ready.
 
+## The portfolio
+
+Sometimes Daniel wants to talk about all the plans at once: whether to take on new work, who should run it, whether the tool is serving its PMs, what to close. That role is real but episodic. It is a procedure that whichever session he asks runs, or that a weekly scheduled routine runs; there is no resident portfolio session (DESIGN.md, "The portfolio is a procedure"). Its output is items in plan `zamu-dev`, ticks in the zamu repo, skill text, messages to PMs and asks to Daniel. It does not run plans; their PMs do. When the procedure ends, nothing it learned should be left only in its context.
+
+Keep two kinds of work apart. **Department work** is running a plan through zamu, and belongs to that plan's PM. **Builder work** is changing zamu itself, its code, this skill and DESIGN.md, and runs as items in `zamu-dev` like any other plan. A portfolio review turns friction found in department work into builder work. It does not fix the tool in the middle of the review, and a PM does not fix the tool while it runs a plan.
+
+### Intake
+
+**An effort is a plan when zamu's machinery pays for itself:** items that run in parallel, outlast one session, cross repos, or wait on people outside the plan. It is not a plan when it is mostly sequential, gated on Daniel's decisions and dispatched to subagents, or when its state already lives somewhere a `plan.toml` would only copy. The SEDI summit build declined on exactly those grounds (DESIGN.md, "Declined by its second customer"), and it was right to. Say no with the reason, and name when it would be worth asking again; the summit's answer was after 2026-11-17. The imbu donation was accepted because its critical path ran through parallel upstream PRs with weeks-long waits on maintainers, and the PVR loose ends because several sessions' worth of work was otherwise held in one tired context.
+
+**Then choose the PM: an existing one or a new one.** An existing PM takes the work when it is the same repos, the same audience, and its context has room. Start a new one when its context is already heavy, and always when the work carries **private material** — an unpublished vulnerability, a candid assessment of someone's project — that would otherwise share a context with a PM drafting public-facing text. The PVR plan got its own PM rather than going to the imbu PM for that reason, although both touch keripy; the two coordinate before touching keripy fork branches.
+
+**Shape the plan by answering these before writing `plan.toml`:**
+
+- What is each item's exit condition, as a read-only check that can only hold once the work has landed?
+- Who outside the plan does the critical path wait on? Those are `external` items with `waiting_on` and `nag_after`.
+- Which decisions are Daniel's, and what is gated on each? Those are `decision` items, not pauses inside a build item, wherever the gate is known in advance.
+- What do finished items rest on that could move? Those are `[pins]`.
+- Which engine and tier does each item need? Judgement goes on Claude. Implementation can go elsewhere, but a non-Claude engine runs without Claude Code's hooks, so keep it off repos and actions those hooks guard.
+- Is there a hard date? Then `due` and `estimate`, so the board can say what is late.
+- Where do candid notes live? The default state root or a private repo (`zamu init <name> --dir`), never a public one.
+- What other plans touch the same repos or pins? Write the agreement into both PMs' `pm.md`, the way the summit and the gaps plan agreed to tell each other before touching heti while the summit pinned it.
+
+### Staffing
+
+1. `zamu init <name>` (with `--dir` for a private repo), write `plan.toml` and its briefs, and run `zamu check`.
+2. Fill in the `pm.md` that `init` wrote. It is the whole of a replacement PM's knowledge, so put in the plan's purpose and critical path, the decisions already made so nobody asks again, the peers and cross-plan agreements, the review and landing procedure, the documents the PM owns, and anything private the PM must and must not do. Record rules already in force with `zamu rules --add`.
+3. `zamu pm start <plan> --tmux-session <session>` prints the command; add `--go` to run it. The PM's session and window are `<plan>-prj`.
+4. The new PM shows Daniel the plan in a few lines and the dry run of `zamu launch --plan <plan> --ready`. Only after he approves it does the PM set `autolaunch = true`.
+5. If another session was carrying this work, tell Daniel which one can now close, once the PM is running.
+
+### Review
+
+Weekly, or when Daniel asks:
+
+1. `zamu portfolio` gives slots, admission, budgets, each plan's PM, autolaunch, risk and waits, and this week's friction counts.
+2. `zamu feedback --list --since <the last review's date>`, or a week ago for the scheduled routine.
+3. Decide what each observation becomes. A change to the tool is an item in `zamu-dev`: a small one with no dependencies when a running plan needs it now, otherwise a tick in the zamu repo for later. A standing rule that every PM should follow becomes skill text, through a `zamu-dev` item, so every future PM inherits it; until it lands, add it with `zamu rules --add` to the plans it affects. Something about one plan goes to its PM as a message. Something only Daniel can decide becomes one ask that stands on its own. Fix nothing yourself during the review.
+4. Look at box policy: admission thresholds, `max_workers`, engine caps and budget probe thresholds. They are Daniel's, so propose changes as asks with the evidence, such as a launch refused at 41% CPU stall against a 40% limit. A temporary cap goes in the box's config with its end date as a rule, and comes out when the date passes; it never goes into zamu's code, skill or shipped config.
+5. Look across plans. The portfolio names repos and pins two plans share; make sure both PMs know and have an agreement.
+6. Tell Daniel what changed and what you filed, in a few lines.
+
+**Plan priority is box-level and never preempts.** When the box is short, priority decides which plan's ready work takes the next free slot, through the box-level levers: whether a plan has `autolaunch` on and how far its `max_workers` is lowered. It never stops, parks or kills another plan's running worker to make room. A running worker holds context that a restart throws away, and only an idle worker is parked.
+
+### Retirement
+
+**Finishing a plan.** Every item is done or abandoned and the board shows no open attention. Retire the remaining workers with `zamu worker retire`, check `zamu reap`, and turn `autolaunch` off. Before the PM closes, it dissolves or hands on its open asks, records any feedback, and proposes any of its plan's rules that every PM should follow. Then tell Daniel the `<plan>-prj` window can close. Keep the plan's directory; it is the record.
+
+**Retiring a PM while its plan continues.** When a PM's context has become the most expensive thing on the box, replace it rather than letting it compact. Have it write whatever it knows that is not on disk into `pm.md`, the plan and `zamu rules`, then `zamu pm restart <plan>` (dry run, then `--go`). That is how the builder session called `foreman` became `zamu-prj`. Spending another PM session is Daniel's call, as it is when the watcher files a recovery ask.
+
+**Handing a context-heavy session's loose ends to a plan.** A session outside zamu that has accumulated work, as the PVR session had, writes its loose ends as items and briefs into a plan, new or existing. The plan's PM adopts any worker already running (`zamu adopt`) rather than relaunching it. Once the PM is running the work, tell Daniel the old session can close.
+
 ## If you are a worker
 
 You were started with a prompt naming your plan and item. Read the briefs it names before anything else. Report with `zamu report --plan <plan> <item> <state> "<one line>"`:
@@ -127,7 +185,7 @@ You were started with a prompt naming your plan and item. Read the briefs it nam
 - `running` at each real milestone, not every step;
 - `review` with the PR URL once it is open;
 - `done` when you believe the work is finished — zamu checks the exit condition itself, so a `done` before the merge leaves the item in review, which is correct. Add `--evidence <path or URL>` naming where the proof lives (a run log, an evidence file, the PR);
-- `waiting` when you pause for the user — a decision node to approve, a question you filed — naming what they must decide and any ask ids;
+- `waiting` when you pause for the user — a decision node to approve, a question you filed — naming what they must decide and any ask ids. A branch the PM has cleared but told to wait its turn is `running "queued to land after <items>"`, because the go comes from the PM, not the user;
 - `stuck` with what you need, when you cannot go on for any other reason.
 
 One line each. The PM reads them every wake, and a paragraph costs it context every time.

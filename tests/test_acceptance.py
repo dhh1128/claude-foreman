@@ -574,7 +574,8 @@ def test_a_codex_item_launches_codex_with_the_prompt_and_no_session_flag(w):
                                        '[items.app-decisions]\nengine = "codex"\n'))
     out = w.zamu("launch", "app-decisions").stdout
     line = next(l for l in out.splitlines() if l.startswith("tmux new-window"))
-    assert " codex --yolo 'You are the worker session" in line
+    assert " codex --yolo -c 'projects." in line
+    assert 'trust_level="trusted"' in line
     assert "--session-id" not in line and " zamu-worker:" in line
 
 
@@ -635,8 +636,11 @@ def test_an_engine_cap_holds_across_plans_and_other_engines_still_launch(w):
     w.zamu("pulse")
     r = w.zamu("launch", "core-lib", check=False)
     assert r.returncode == 2 and "1 claude worker(s) are live, its cap" in r.stderr
+    board = w.zamu("board").stdout
+    assert "claude cap 1 held by app-decisions" in board
+    assert "claude cap 1 held by app-decisions" in w.zamu("launch", "--ready").stdout
     p.write_text(p.read_text().replace('[items.core-lib]\n', '[items.core-lib]\nengine = "codex"\n'))
-    assert " codex 'You are the worker session" in w.zamu("launch", "core-lib").stdout
+    assert " codex -c 'projects." in w.zamu("launch", "core-lib").stdout
     # --ready skips claude items while claude is at its cap, and still offers codex ones.
     out = w.zamu("launch", "--ready").stdout
     assert "core-lib" in out and "relay-lib" not in out

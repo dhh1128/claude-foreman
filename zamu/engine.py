@@ -18,7 +18,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable
 
-from . import graph, launch as launch_mod, oracles, procs as procs_mod, store
+from . import budgets, graph, launch as launch_mod, oracles, procs as procs_mod, store
 from .config import Config
 from .coord import Coord
 from .plan import Item, Plan
@@ -56,6 +56,7 @@ class World:
     #: The pid of every tmux pane's process, or None when tmux cannot be asked. Anything under
     #: a pane is somebody's live session and is never reaped.
     pane_pids: Callable[[], "list[int] | None"] = lambda: None
+    budget_run: Callable[[list[str]], tuple[int, str, str]] | None = None
 
 
 class EngineError(RuntimeError):
@@ -237,6 +238,7 @@ def pulse(plan: Plan, plan_dir: Path, cfg: Config, world: World,
             pin_values[name] = None
 
     idle_proofs = _idle_worker_proofs(plan, snap, world, now)
+    budget_readings = _budget_readings(cfg, world) if cfg.budgets else {}
 
     changes: list[str] = []
     messages: list[tuple[str, str]] = []
@@ -319,6 +321,8 @@ def pulse(plan: Plan, plan_dir: Path, cfg: Config, world: World,
             doc["admission"] = {"ok": ok, "why": why, "at": _iso(now)}
         else:
             doc.pop("admission", None)
+        if cfg.budgets:
+            changes += _budget_episode(plan, plan_dir, doc, cfg, world, now, budget_readings)
         changes += _leftovers(plan, plan_dir, doc, graph.states(plan, doc), cfg, world, now)
         pm = dict(doc.get("pm", {}))
     for outcome, line in messages:
@@ -542,6 +546,84 @@ def _ready_since(plan: Plan, doc: dict[str, Any], sts: dict[str, str], now: dt.d
             rec.pop("ready_since", None)
 
 
+def budget_waiting(plan: Plan, doc: dict[str, Any], cfg: Config, readings: dict) -> list[str]:
+    """Items held solely by budget, not by a count or engine configuration."""
+    if doc.get("admission", {}).get("ok") is False:
+        return []
+    used, cap = slots(plan, doc, cfg)
+    if used >= cap:
+        return []
+    load = engine_load(plan, doc)
+    return [iid for iid in graph.launchable(plan, graph.states(plan, doc))
+            if all(e in cfg.engines and e in cfg.budgets and
+                   (e not in cfg.engine_caps or load.get(e, 0) < cfg.engine_caps[e]) and
+                   readings.get(e, {}).get("verdict") == "not-now"
+                   for e in plan.items[iid].engines)]
+
+
+def _budget_episode(plan: Plan, plan_dir: Path, doc: dict[str, Any], cfg: Config,
+                    world: World, now: dt.datetime, readings: dict) -> list[str]:
+    waiting = budget_waiting(plan, doc, cfg, readings)
+    episode = doc.setdefault("budget_episode", {})
+    recovered = any(readings.get(e, {}).get("verdict") == "admit"
+                    for iid in episode.get("waiting", []) if iid in plan.items
+                    for e in plan.items[iid].engines)
+    resets = [_parse(readings[e].get("data", {}).get("resets_at", ""))
+              for iid in waiting for e in plan.items[iid].engines]
+    earliest = min((r for r in resets if r and r > now), default=None)
+    if recovered or (episode.get("reset") and _parse(episode["reset"])
+                       and now >= _parse(episode["reset"])):
+        if episode.get("since") or episode.get("ask"):
+            doc["budget_episode"] = {"number": episode.get("number", 0) + 1}
+        episode = doc["budget_episode"]
+    item_since = episode.setdefault("item_since", {})
+    for iid in list(item_since):
+        if iid not in waiting:
+            item_since.pop(iid)
+    if not waiting:
+        return []
+    episode["waiting"] = waiting
+    episode.setdefault("since", _iso(now))
+    for iid in waiting:
+        item_since.setdefault(iid, _iso(now))
+    prior_reset = _parse(episode.get("reset", ""))
+    if earliest and (prior_reset is None or earliest < prior_reset):
+        episode["reset"] = _iso(earliest)
+    due = any((now - _parse(item_since[iid])).total_seconds() >= cfg.budget_ask_minutes * 60
+              for iid in waiting)
+    if episode.get("ask") or not due:
+        return []
+    def figure(e: str) -> str:
+        data = readings[e].get("data", {})
+        shown = data.get("figure") or (f"{data['used_pct']}%" if data.get("used_pct") is not None
+                                        else "not now")
+        return f"{e}: {shown}" + (f", resets {data['resets_at']}" if data.get("resets_at") else "")
+
+    figures = "; ".join(figure(e) for e in dict.fromkeys(
+        e for iid in waiting for e in plan.items[iid].engines))
+    items = "; ".join(f"{iid} ({', '.join(plan.items[iid].engines)})" for iid in waiting)
+    text = (f"Plan {plan.name} waits for engine budget: {items}. {figures}. Choose whether to "
+            f"{'wait until ' + earliest.isoformat() if earliest else 'wait for capacity'}, add an engine to "
+            "these items, raise a probe threshold, or buy capacity.")
+    episode["line"] = text
+    if cfg.escalate == "none":
+        episode["ask"] = "board"
+        episode.pop("error", None)
+        return []
+    repo = doc.get("pm", {}).get("repo") or world.cwd()
+    if not repo:
+        return []
+    tag = ask_tag(plan, f"budget-{episode.get('number', 0)}", "Q")
+    ok, note = world.coord.ask_add(repo, tag, "Q", text)
+    if ok:
+        episode["ask"] = tag
+        episode.pop("error", None)
+        _event(plan_dir, now, "", "budget_escalate", tag=tag, repo=repo)
+        return [f"budget trade-off escalated as {tag}"]
+    episode["error"] = note
+    return [f"budget escalation failed: {note}"]
+
+
 def _escalate(plan: Plan, plan_dir: Path, doc: dict[str, Any], sts: dict[str, str],
               world: World, now: dt.datetime) -> list[str]:
     """One ask per ready decision (Q), and per ready external item waiting on the user (A),
@@ -622,7 +704,7 @@ def engine_load(plan: Plan, doc: dict[str, Any]) -> dict[str, int]:
                     e = rec.get("engine") or engines.get(iid, "claude")
                     counts[e] = counts.get(e, 0) + 1
 
-    add(doc.get("items", {}), {i: it.engine for i, it in plan.items.items()})
+    add(doc.get("items", {}), {i: it.engines[0] for i, it in plan.items.items()})
     here = plan.path.parent.resolve()
     root = config.plans_dir()
     if root.is_dir():
@@ -634,6 +716,34 @@ def engine_load(plan: Plan, doc: dict[str, Any]) -> dict[str, int]:
             except (OSError, store.StoreError):
                 continue
     return counts
+
+
+def engine_holders(plan: Plan, doc: dict[str, Any], name: str) -> list[str]:
+    """The live item identities consuming one engine cap, including other plans."""
+    from . import config
+    holders = []
+
+    def add(items, prefix):
+        seen = set()
+        for iid, rec in items.items():
+            wid = rec.get('wid') or iid
+            if (wid not in seen and rec.get('state') in graph.ACTIVE
+                    and rec.get('worker') != 'dead'
+                    and (rec.get('session') or rec.get('pane') or rec.get('wid'))
+                    and rec.get('engine', plan.items[iid].engines[0] if not prefix and iid in plan.items else 'claude') == name):
+                holders.append(prefix + iid)
+                seen.add(wid)
+
+    add(doc.get('items', {}), '')
+    root = config.plans_dir()
+    if root.is_dir():
+        for path in root.iterdir():
+            try:
+                if path.resolve() != plan.path.parent.resolve():
+                    add(store.read(path).get('items', {}), path.name + '/')
+            except (OSError, store.StoreError):
+                continue
+    return holders
 
 
 def busy_elsewhere(plan: Plan) -> dict[str, int]:
@@ -685,9 +795,21 @@ def admission_can_block(plan: Plan, doc: dict[str, Any], cfg: Config) -> bool:
     if used >= cap:
         return False
     load = engine_load(plan, doc) if cfg.engine_caps else {}
-    return any(plan.items[i].engine not in cfg.engine_caps
-               or load.get(plan.items[i].engine, 0) < cfg.engine_caps[plan.items[i].engine]
+    return any(any(e in cfg.engines and (e not in cfg.engine_caps
+                   or load.get(e, 0) < cfg.engine_caps[e]) for e in plan.items[i].engines)
                for i in graph.launchable(plan, graph.states(plan, doc)))
+
+
+def _budget_readings(cfg: Config, world: World, *, force: bool = False,
+                     names: tuple[str, ...] | None = None, locked: bool = False) -> dict:
+    if not cfg.budgets:
+        return {}
+    return budgets.refresh(cfg, world.now(), world.budget_run or world.run,
+                           force=force, names=names, locked=locked)
+
+
+def _choose(it: Item, cfg: Config, load: dict[str, int], readings: dict) -> tuple[str | None, str]:
+    return budgets.choice(it.engines, cfg, load, readings)
 
 
 def admit(cfg: Config, world: World) -> tuple[bool | None, str]:
@@ -720,6 +842,10 @@ def prepare(plan: Plan, plan_dir: Path, cfg: Config, world: World, ids: list[str
         ok, why = admit(cfg, world)
         if ok is False:
             raise BusyError(f"the box is busy, so launches wait: {why}")
+    names = tuple(dict.fromkeys(e for iid in ids if iid in plan.items
+                                for e in plan.items[iid].engines))
+    readings = _budget_readings(cfg, world, names=names) if not relaunch else {}
+    load = engine_load(plan, doc)
     out = []
     for iid in ids:
         it = plan.items.get(iid)
@@ -743,25 +869,34 @@ def prepare(plan: Plan, plan_dir: Path, cfg: Config, world: World, ids: list[str
                 raise EngineError(f"{iid} is {sts[iid]}, not ready.")
             if used >= cap:
                 raise EngineError(f"{used} of {cap} workers are live; {iid} waits for a slot.")
-            ecap = cfg.engine_caps.get(it.engine)
-            if ecap is not None and engine_load(plan, doc).get(it.engine, 0) >= ecap:
-                raise EngineError(f"{ecap} {it.engine} worker(s) are live, its cap; {iid} waits "
-                                  f"(or set engine = \"<another>\" on it).")
             used += 1
+        selected = rec.get("engine") or it.engines[0] if relaunch else _choose(it, cfg, load, readings)[0]
+        if not selected:
+            _chosen, reason = _choose(it, cfg, load, readings)
+            if len(it.engines) == 1 and it.engines[0] not in cfg.engines:
+                raise EngineError(f"{iid} wants engine {it.engines[0]!r}, which config does not define; "
+                                  f"known: {', '.join(sorted(cfg.engines))}. Add it under [engines].")
+            if len(it.engines) == 1 and it.engines[0] in cfg.engine_caps:
+                e = it.engines[0]
+                if load.get(e, 0) >= cfg.engine_caps[e]:
+                    raise EngineError(f"{cfg.engine_caps[e]} {e} worker(s) are live, its cap; {iid} waits (or set engine = \"<another>\" on it).")
+            raise EngineError(f"{iid} waits for an engine: {reason}")
+        if not relaunch:
+            load[selected] = load.get(selected, 0) + 1
         kept = rec.get("worktree", "") if relaunch else ""
         if kept and not launch_mod.worktree_exists(kept):
             kept = ""
         wt = kept or f"{it.repo.rstrip('/')}/.worktrees/{it.topic}"
         exists = launch_mod.worktree_exists(wt)
         default = it.base or ("" if exists else launch_mod.default_branch(it.repo, world.run))
-        if it.engine not in cfg.engines:
-            raise EngineError(f"{iid} wants engine {it.engine!r}, which config does not define; "
+        if selected not in cfg.engines:
+            raise EngineError(f"{iid} wants engine {selected!r}, which config does not define; "
                               f"known: {', '.join(sorted(cfg.engines))}. Add it under [engines].")
-        if relaunch and it.engine != "claude":
+        if relaunch and selected != "claude":
             session = None  # only claude can resume a conversation; others start over
         out.append(launch_mod.plan_launch(
             plan, it, tmux_session=cfg.tmux_session or world.tmux_session(),
-            claude=cfg.engines[it.engine], engine=it.engine,
+            claude=cfg.engines[selected], engine=selected,
             default_branch=default, worktree_exists=exists,
             branch_exists=False if exists else launch_mod.branch_exists(it.repo, it.topic, world.run),
             session=session, worktree=kept))
@@ -775,15 +910,20 @@ def ready_to_fill(plan: Plan, plan_dir: Path, cfg: Config,
     filling every slot on one reading would admit them all against the same idle moment."""
     doc = store.read(plan_dir)
     used, cap = slots(plan, doc, cfg)
-    load = engine_load(plan, doc) if cfg.engine_caps else {}
+    if used >= cap:
+        return []
+    load = engine_load(plan, doc)
     ready = [i for i in graph.launchable(plan, graph.states(plan, doc))
-             if plan.items[i].engine not in cfg.engine_caps
-             or load.get(plan.items[i].engine, 0) < cfg.engine_caps[plan.items[i].engine]]
-    ready = ready[:max(cap - used, 0)]
+             if any(e in cfg.engines and (e not in cfg.engine_caps or
+                    load.get(e, 0) < cfg.engine_caps[e])
+                    for e in plan.items[i].engines)]
     if ready and cfg.admission and world is not None:
         ok, _why = admit(cfg, world)
-        return [] if ok is False else ready[:1]
-    return ready
+        if ok is False:
+            return []
+    readings = _budget_readings(cfg, world) if world is not None and cfg.budgets else (budgets.read() or {})
+    ready = [i for i in ready if _choose(plan.items[i], cfg, load, readings)[0]]
+    return ready[:1] if cfg.admission or cfg.budgets else ready[:max(cap - used, 0)]
 
 
 def commit_launch(plan: Plan, plan_dir: Path, cfg: Config, world: World,
@@ -798,9 +938,16 @@ def commit_launch(plan: Plan, plan_dir: Path, cfg: Config, world: World,
         used, cap = slots(plan, doc, cfg)
         if not ln.resume and used >= cap:
             raise EngineError(f"{used} of {cap} workers are live; {ln.item} waits for a slot.")
+        engine = ln.engine if not ln.resume else (doc.get("items", {}).get(ln.item, {}).get("engine")
+                                                  or ln.engine)
+        if not ln.resume:
+            readings = _budget_readings(cfg, world, force=True, names=plan.items[ln.item].engines,
+                                        locked=True)
+            chosen, why = _choose(plan.items[ln.item], cfg, engine_load(plan, doc), readings)
+            if chosen != engine:
+                raise BusyError(f"{ln.item} waits: engine choice changed ({why or chosen})")
         got = launch_mod.execute(ln, world.run)
         rec = _rec(doc, ln.item)
-        engine = plan.items[ln.item].engine
         rec["engine"] = engine
         rec.update({"state": rec.get("state") if ln.resume or rec.get("state") in graph.ACTIVE
                     else "running",

@@ -51,7 +51,7 @@ class Item:
     pinned: str = ""         # "done" or "abandoned" when the human says so in the file
     ref: str = ""            # free text: a tracker id, an issue, a PR -- shown, never parsed
     base: str = ""           # branch to start the worktree from; default origin's HEAD
-    engine: str = "claude"   # what `launch` starts: a key of config `engines`
+    engine: str | tuple[str, ...] = "claude"   # preference order, or a legacy single engine
     rests_on: tuple[str, ...] = ()   # pins whose movement makes this item's evidence stale
     #: Other repos this item's work lands in. `repo` is where its worker starts; a change that
     #: spans a test suite and a library touches both, and merges queue in each.
@@ -67,6 +67,10 @@ class Item:
     @property
     def repos(self) -> tuple[str, ...]:
         return tuple(r.rstrip("/") for r in (self.repo, *self.touches) if r)
+
+    @property
+    def engines(self) -> tuple[str, ...]:
+        return (self.engine,) if isinstance(self.engine, str) else self.engine
 
 
 @dataclass(frozen=True)
@@ -137,6 +141,15 @@ def _strs(v: Any, where: str, key: str) -> tuple[str, ...]:
     if isinstance(v, list) and all(isinstance(x, str) for x in v):
         return tuple(x for x in v if x.strip())
     raise PlanError(f"{where}: {key} must be a string or a list of strings.")
+
+
+def _engines(v: Any, where: str) -> str | tuple[str, ...]:
+    if isinstance(v, list) and (not v or any(not isinstance(x, str) or not x.strip() for x in v)):
+        raise PlanError(f"{where}: engine needs distinct, nonempty names.")
+    names = _strs(v, where, "engine")
+    if not names or len(set(names)) != len(names) or any(not x.strip() for x in names):
+        raise PlanError(f"{where}: engine needs distinct, nonempty names.")
+    return names[0] if isinstance(v, str) else names
 
 
 def _path(v: str, base: Path) -> str:
@@ -212,7 +225,7 @@ def parse(text: str, path: Path, name: str | None = None) -> Plan:
             estimate_days=_days(d.get("estimate"), where),
             pinned=pinned, ref=str(d.get("ref", "")).strip(),
             base=str(d.get("base", "")).strip(),
-            engine=str(d.get("engine", "claude")).strip() or "claude",
+            engine=_engines(d.get("engine", "claude"), where),
             rests_on=_strs(d.get("rests_on"), where, "rests_on"),
             touches=tuple(_path(t, base) for t in _strs(d.get("touches"), where, "touches")),
             waiting_on=str(d.get("waiting_on", "")).strip(),

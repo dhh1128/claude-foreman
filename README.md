@@ -66,6 +66,7 @@ cmd = "git -C /home/me/code/app show HEAD:pyproject.toml | grep -o 'core.git@[0-
 [items.release-check]
 rests_on = ["core"]               # a moved pin makes this item's evidence stale
 engine = "codex"                  # launched with config's [engines] codex command
+# engine = ["codex", "claude"]     # try in order; a single string keeps its old meaning
 ```
 
 Items can also say who they wait on and when to nag, and a decision can be held until a wait drags on:
@@ -108,6 +109,7 @@ zamu pm restart <plan> --go  start the replacement
 zamu reap [--go]            list leftover processes; kill those no live worker owns
 zamu watch [--plan] [--exit-on-news]   pulse, autolaunch, wake PMs only with news
 zamu service install|status|uninstall  run the watcher as a systemd user service
+zamu budget codex|openrouter|claude    standalone account budget probes
 zamu show <id>              one item in full
 zamu check | plans | addendum
 ```
@@ -134,6 +136,26 @@ escalate = "session-coord" # or "none"
 ```
 
 Workers are started by tmux, not by your interactive shell, so a shell function or alias that adds flags to `claude` does not apply to them. Put the flags in `claude` (or under `[engines]`). Choose them knowingly: a worker runs unattended, so a permission prompt stalls it where nobody sees, while a flag that skips permissions or a sandbox lets it act unreviewed. zamu defaults to neither.
+
+Engine budgets can be measured with optional commands in `~/.config/zamu/config.toml`:
+
+```toml
+budget_refresh_minutes = 10
+budget_ask_minutes = 60
+
+[engines]
+codex = ["codex"]
+
+[budgets.codex]
+probe = ["zamu", "budget", "codex", "--max-pct", "60"]
+
+[budgets.claude]
+probe = ["zamu", "budget", "claude", "--projects", "~/.claude/projects", "--max-pct", "85"]
+```
+
+A probe prints one JSON object with optional `figure`, `used_pct`, `resets_at`, and `estimate` fields. Exit 0 admits, 75 means not now, and any other exit means zamu could not look. A missing budget entry always admits that engine through this check. An unknown reading can be used only if no preferred engine admits; the board shows it as unknown. CPU and memory admission still falls back to the count cap when its check cannot look. The difference is deliberate: a budget failure can consume a whole worker session, while a box check failure is bounded by the worker count.
+
+`zamu budget codex` reads Codex rollout limits. `zamu budget openrouter --min-usd 5` reads the OpenRouter key via `llm keys get openrouter` and checks remaining credit. `zamu budget claude` estimates usage from one account's transcript directory; run `zamu budget claude --projects ~/.claude/projects calibrate 76` after reading 76% on Claude's usage page to set its allowance. For a known weekly reset, pass `--reset "Thu 17:00 UTC"`; without it the estimate uses a rolling seven day window. `~/.config/budget/claude.toml` can set `[model_factors]` for `opus`, `sonnet`, and `haiku`; the defaults are 5, 3, and 1. The Claude figure is an estimate and needs recalibration if its model mix changes.
 
 House rules for the skill go in `~/.config/zamu/addendum.md` (or `ZAMU_ADDENDUM`), which the skill reads first and treats as more specific than itself.
 

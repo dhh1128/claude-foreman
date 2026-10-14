@@ -11,7 +11,7 @@ from __future__ import annotations
 import datetime as dt
 from typing import Any
 
-from . import engine, graph
+from . import budgets, engine, graph
 from .config import Config
 from .plan import Plan
 
@@ -35,6 +35,11 @@ def summary(plan: Plan, doc: dict[str, Any], cfg: Config, now: dt.datetime) -> d
     used, cap = engine.slots(plan, doc, cfg)
     elsewhere = engine.busy_elsewhere(plan)
     attention: list[str] = []
+    saved = budgets.read() if cfg.budgets else {}
+    readings = (saved if saved is not None else
+                {e: {"verdict": "unknown", "why": "could not read budgets.json", "data": {}}
+                 for e in cfg.budgets})
+    load = engine.engine_load(plan, doc) if cfg.engine_caps else {}
     pm = doc.get("pm", {})
     if pm.get("status") == "dead" and pm.get("dead_ask"):
         attention.append(f"PM gone; asked {pm['dead_ask']} to run `zamu pm restart {plan.name}`")
@@ -85,6 +90,16 @@ def summary(plan: Plan, doc: dict[str, Any], cfg: Config, now: dt.datetime) -> d
         attention.append(f"launches wait, the box is busy: {_short(adm.get('why', ''), 90)}")
     elif adm.get("ok") is None and adm.get("why"):
         attention.append(f"admission unknown, count cap only: {_short(adm['why'], 80)}")
+    for name in cfg.budgets:
+        reading = readings.get(name, {})
+        if reading.get("verdict", "unknown") == "unknown":
+            attention.append(f"{name} budget unknown: {_short(reading.get('why', 'could not look'), 80)}")
+    episode = doc.get('budget_episode', {})
+    budget_stalled = bool(cfg.budgets and engine.budget_waiting(plan, doc, cfg, readings))
+    if episode.get('ask') == 'board' and budget_stalled:
+        attention.append(_short(episode.get('line', 'budget trade-off needed'), 300))
+    if episode.get('error') and budget_stalled:
+        attention.append(f"budget escalation failed: {_short(episode['error'], 80)}")
     for iid in engine.stalled(plan, doc, cfg, now):
         attention.append(f"{iid}: no report for {_ago(recs[iid]['last_report'], now)}")
     for iid in plan.items:
@@ -121,6 +136,24 @@ def summary(plan: Plan, doc: dict[str, Any], cfg: Config, now: dt.datetime) -> d
             active.append(f"{iid} {who}{sts[iid]} {r.get('worker', '-')} "
                           f"{_ago(r.get('last_report', ''), now)}: \"{_short(r.get('last_line', ''), 60)}\"")
     launch = graph.launchable(plan, sts)
+    waiting = []
+    eligible = []
+    for iid in launch:
+        it = plan.items[iid]
+        selected, reason = engine._choose(it, cfg, load, readings)
+        if selected:
+            eligible.append(iid)
+        if selected is None and reason:
+            if all(readings.get(e, {}).get('verdict') == 'not-now' for e in it.engines):
+                waiting.append(f"{iid} (ready, waits for budget ({', '.join(it.engines)}))")
+            else:
+                waiting.append(f"{iid} (ready, waits for engine: {reason})")
+            for e in it.engines:
+                ecap = cfg.engine_caps.get(e)
+                if ecap is not None and load.get(e, 0) >= ecap:
+                    holders = engine.engine_holders(plan, doc, e)
+                    attention.append(f"{iid}: {e} cap {ecap} held by {', '.join(holders) or 'workers in another plan'}")
+    launch = eligible
     idle = [f"{wid} ({w.get('engine', '?')})" for wid, w in doc.get("workers", {}).items()
             if w.get("worker") not in ("dead", "retired")
             and (not (w.get("pane") or w.get("session")) or w.get("worker") == "live")
@@ -129,7 +162,6 @@ def summary(plan: Plan, doc: dict[str, Any], cfg: Config, now: dt.datetime) -> d
                if (w.get("pane") or w.get("session")) and w.get("worker") != "live"
                and w.get("worker") not in ("dead", "retired")
                and not any(sts.get(i) in graph.ACTIVE for i in w.get("items", []))]
-    waiting = []
     for iid, it in plan.items.items():
         if it.kind != "build" and sts[iid] == "ready":
             r = recs.get(iid, {})
@@ -153,6 +185,7 @@ def summary(plan: Plan, doc: dict[str, Any], cfg: Config, now: dt.datetime) -> d
             "elsewhere": elsewhere,
             "counts": counts, "attention": attention, "active": active,
             "launchable": launch, "idle_workers": idle, "unknown_workers": unknown,
+            "budgets": readings,
             "slots": max(cap - used, 0), "waiting": waiting,
             "blocked": blocked, "done": [i for i in plan.items if sts[i] == "done"],
             "states": sts}
@@ -167,6 +200,14 @@ def board(plan: Plan, doc: dict[str, Any], cfg: Config, now: dt.datetime) -> str
     head = (f"plan {s['plan']} {s['date']}  workers {s['workers'][0]}/{s['workers'][1]}{split}  "
             + " ".join(f"{k} {v}" for k, v in c.items() if v))
     out = [head]
+    if cfg.budgets:
+        parts = []
+        for name in cfg.budgets:
+            r = s['budgets'].get(name, {})
+            detail = r.get('data', {}).get('figure') or r.get('why') or 'no reading yet'
+            suffix = f" — {r['verdict']}" if r.get('verdict') in ('not-now', 'unknown') else ''
+            parts.append(f"{name} {_short(detail, 70)}{suffix}")
+        out.append('budgets: ' + ' · '.join(parts))
     if s["attention"]:
         out.append("attention:")
         out += [f"  {a}" for a in s["attention"]]

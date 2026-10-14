@@ -143,10 +143,11 @@ def _pane_pids() -> list[int] | None:
 
 
 def world() -> engine.World:
-    from . import procs
+    from . import budgets, procs
     return engine.World(tmux_session=_tmux_session, pane_exists=_pane_exists,
                         pane_has_session=_pane_has_session,
-                        scan=procs.scan, pane_activity=_pane_activity, pane_pids=_pane_pids)
+                        scan=procs.scan, pane_activity=_pane_activity, pane_pids=_pane_pids,
+                        budget_run=budgets.run)
 
 
 def _load(args):
@@ -216,7 +217,12 @@ def cmd_launch(args) -> int:
     if args.ready:
         ids += [i for i in engine.ready_to_fill(plan, d, cfg, w) if i not in ids]
     if not ids:
-        print("nothing to launch: no ready build items, or no free slots.")
+        doc = store.read(d)
+        summary = render.summary(plan, doc, cfg, w.now())
+        reasons = [x for x in summary['waiting'] if 'ready, waits' in x]
+        caps = [x for x in summary['attention'] if ' cap ' in x and 'held by' in x]
+        print("nothing to launch: " + ("; ".join(reasons + caps) if reasons or caps else
+                                     "no ready build items, or no free slots."))
         return 0
     launches = engine.prepare(plan, d, cfg, w, ids, relaunch=args.relaunch)
     for ln in launches:
@@ -435,6 +441,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="zamu", description="Hold a cross-repo plan, launch "
                                 "worker sessions when dependencies clear, watch them, escalate.")
     sub = p.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("budget", help="probe Codex, OpenRouter, or Claude account headroom")
 
     def plan_arg(sp):
         sp.add_argument("--plan", help="plan name or path (default $ZAMU_PLAN, or the only plan)")
@@ -559,6 +566,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+    if argv[:1] == ["budget"]:
+        from .budget_probes import main as budget_main
+        return budget_main(argv[1:])
     args = build_parser().parse_args(argv)
     try:
         return args.func(args)

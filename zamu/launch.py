@@ -48,6 +48,7 @@ class Launch:
     token: str = ""          # carried in the wrapper's argv; proves the worker by its pane
     tmux_session: str = ""   # for PM launches, recorded again once the window is open
     pm_guard: tuple[str, str, str] = ("", "", "")  # target, status, since before a PM launch
+    engine: str = "claude"
 
 
 def worker_prompt(plan: Plan, it: Item, worktree: str, resume: bool) -> str:
@@ -130,6 +131,12 @@ def plan_launch(plan: Plan, it: Item, *, tmux_session: str, claude: Sequence[str
         cmd = list(claude) + (["--resume", sid] if resume else ["--session-id", sid])
     else:
         cmd = list(claude)  # other engines take the prompt as their first argument
+        if engine == "codex":
+            # Codex otherwise stops at an unattended "Trust this folder?" prompt. The
+            # command-line config applies to this launch without editing the user's config.
+            import json
+            for root in (repo, wt):
+                cmd += ["-c", f'projects.{json.dumps(root)}.trust_level="trusted"']
     cmd.append(worker_prompt(plan, it, wt, resume))
     tmux = ["tmux", "new-window", "-d", "-P", "-F", "#{pane_id}"]
     if target:
@@ -145,7 +152,7 @@ def plan_launch(plan: Plan, it: Item, *, tmux_session: str, claude: Sequence[str
     shell = ["sh", "-c", '"$@"; exec "${SHELL:-/bin/sh}" -l', f"zamu-worker:{sid}", *cmd]
     tmux += ["-n", it.topic, "-c", wt, *shell]
     steps.append(Step(tuple(tmux), "open a window running the worker", capture="pane"))
-    return Launch(it.id, sid, wt, it.topic, resume, tuple(steps), token=sid)
+    return Launch(it.id, sid, wt, it.topic, resume, tuple(steps), token=sid, engine=engine)
 
 
 # --- facts about the repo, gathered before planning ---------------------------------------

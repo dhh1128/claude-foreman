@@ -80,6 +80,10 @@ class Config:
     admission: tuple[str, ...] = ()
     #: engine name -> most live workers of that engine across all plans, e.g. {"claude": 2}
     engine_caps: dict = field(default_factory=dict)
+    #: engine -> command returning JSON and exit 0 (admit), 75 (not now), other (unknown).
+    budgets: dict = field(default_factory=dict)
+    budget_refresh_minutes: float = 10.0
+    budget_ask_minutes: float = 60.0
 
     def __post_init__(self):
         if "claude" not in self.engines:
@@ -129,6 +133,21 @@ def load() -> Config:
     engines = {k: tuple([v] if isinstance(v, str) else v) for k, v in engines.items()}
     engines.setdefault("claude", tuple(kw.get("claude", ("claude",))))
     kw["engines"] = engines
+    budgets = kw.get("budgets", {})
+    if not isinstance(budgets, dict):
+        raise ConfigError("[budgets] must map engine names to probe commands.")
+    parsed = {}
+    for name, spec in budgets.items():
+        if not isinstance(spec, dict) or set(spec) != {"probe"}:
+            raise ConfigError(f"[budgets.{name}] needs only a probe command.")
+        command = spec["probe"]
+        if not isinstance(command, list) or not command or not all(isinstance(x, str) and x for x in command):
+            raise ConfigError(f"[budgets.{name}].probe must be a nonempty command list.")
+        parsed[name] = tuple(command)
+    kw["budgets"] = parsed
+    for key in ("budget_refresh_minutes", "budget_ask_minutes"):
+        if not isinstance(kw.get(key, 10), (int, float)) or kw.get(key, 10) <= 0:
+            raise ConfigError(f"{key} must be positive.")
     if kw.get("escalate", "session-coord") not in ("session-coord", "none"):
         raise ConfigError("escalate must be \"session-coord\" or \"none\".")
     return Config(**kw)

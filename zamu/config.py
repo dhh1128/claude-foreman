@@ -261,13 +261,13 @@ def set_plan_weight(plan: str, value: int, *, reserve_slots: bool = False,
         new_body = _write_table(body, table, values)
         # Parse before replacing the live file, including any unrelated tables.
         tomllib.loads(new_body)
+        store._write_atomic(p, new_body)
         with open(p.parent / "priority.jsonl", "a") as audit:
             audit.write(json.dumps({"at": dt.datetime.now(dt.timezone.utc).isoformat(),
                                     "who": who or env("USER") or os.environ.get("USER", "unknown"),
                                     "plan": plan, "field": table, "old": old, "new": value}) + "\n")
             audit.flush()
             os.fsync(audit.fileno())
-        store._write_atomic(p, new_body)
     return load()
 
 

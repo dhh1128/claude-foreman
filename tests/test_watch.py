@@ -363,3 +363,53 @@ def test_board_names_plan_that_took_priority_slot(tmp_path):
     watch.cycle(None, cfg, _world(FakeCoord(), []), False, notify=False)
     board = render.board(watch.load(low / 'plan.toml', 'low'), store.read(low), cfg, T0)
     assert 'i0 (ready, waits for slot taken by higher-priority plan high)' in board
+
+
+def test_priority_wait_is_hidden_when_engine_or_budget_also_blocks(tmp_path, monkeypatch):
+    from zamu import render
+    low = _other_plan(tmp_path, 'low')
+    _other_plan(tmp_path, 'high')
+    cfg = config.Config(max_workers=1, priority={'high': 10})
+    watch.cycle(None, cfg, _world(FakeCoord(), []), False, notify=False)
+    plan, doc = watch.load(low / 'plan.toml', 'low'), store.read(low)
+
+    monkeypatch.setattr(engine, '_choose', lambda *_args: (None, 'claude: cap 1 reached'))
+    board = render.board(plan, doc, cfg, T0)
+    assert 'i0 (ready, waits for engine: claude: cap 1 reached)' in board
+    assert 'slot taken by higher-priority plan' not in board
+
+    budget_cfg = config.Config(max_workers=1, priority={'high': 10},
+                               budgets={'claude': ('probe',)})
+    monkeypatch.setattr(render.budgets, 'read', lambda: {'claude': {'verdict': 'not-now', 'data': {}}})
+    board = render.board(plan, doc, budget_cfg, T0)
+    assert 'i0 (ready, waits for budget (claude))' in board
+    assert 'slot taken by higher-priority plan' not in board
+
+
+def test_priority_wait_uses_plan_specific_cap(tmp_path):
+    low = _other_plan(tmp_path, 'low', 2)
+    high = _other_plan(tmp_path, 'high')
+    (low / 'plan.toml').write_text((low / 'plan.toml').read_text().replace(
+        '[plan]\n', '[plan]\nmax_workers = 1\n'))
+    with store.transaction(low) as doc:
+        doc['items']['i0'] = {'state': 'running', 'engine': 'claude', 'wid': 'low-worker'}
+    with store.transaction(high) as doc:
+        doc['items']['i0'] = {'state': 'running', 'engine': 'claude', 'wid': 'high-worker'}
+    cfg = config.Config(max_workers=3, priority={'high': 10})
+    watch.cycle(None, cfg, _world(FakeCoord(), []), False, notify=False)
+    assert store.read(low)['priority_wait'] == {'i1': 'high'}
+
+
+def test_cross_plan_fill_respects_max_workers_with_more_candidates(tmp_path):
+    first = _other_plan(tmp_path, 'first', 2)
+    second = _other_plan(tmp_path, 'second', 2)
+    cfg = config.Config(max_workers=1)
+    c, ran = FakeCoord(), []
+    # The global scheduler can see several candidates even though only one fits.
+    plan = watch.load(first / 'plan.toml', 'first')
+    assert len(engine.ready_to_fill(plan, first, cfg, _world(c, ran)(), all_candidates=True)) == 2
+    ticks = watch.cycle(None, cfg, _world(c, ran), False, notify=False)
+    assert sum(len(t.launched) for t in ticks) == 1
+    assert sum(r.get('state') == 'running' for d in (first, second)
+               for r in store.read(d)['items'].values()) == 1
+    assert len([a for a in ran if a[:2] == ['tmux', 'new-window']]) == 1

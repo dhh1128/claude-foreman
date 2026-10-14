@@ -42,3 +42,17 @@ def test_bad_weight_config_is_refused(body, tmp_path):
     Path(os.environ['ZAMU_CONFIG']).write_text(body)
     with pytest.raises(config.ConfigError):
         config.load()
+
+
+def test_failed_config_write_does_not_claim_a_priority_change(tmp_path, monkeypatch):
+    d = config.plans_dir() / 'alpha'
+    d.mkdir(parents=True)
+    (d / 'plan.toml').write_text('[items.a]\ntitle="a"\nkind="external"\noracle="manual"\n')
+
+    def fail_write(*_args):
+        raise OSError('disk full')
+
+    monkeypatch.setattr(config.store, '_write_atomic', fail_write)
+    with pytest.raises(OSError, match='disk full'):
+        config.set_plan_weight('alpha', 5, who='Daniel')
+    assert not (config.config_path().parent / 'priority.jsonl').exists()

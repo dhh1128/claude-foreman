@@ -238,8 +238,8 @@ def cycle(ref: str | None, cfg: config.Config, base_world: Callable[[], engine.W
                 winner = next((name for name in sorted(holders,
                                key=lambda n: (-cfg.priority.get(n, 0), n))
                                if cfg.priority.get(name, 0) > cfg.priority.get(plan.name, 0)), "")
-                used, _ = engine.slots(plan, doc, cfg)
-                if winner and used >= cfg.max_workers:
+                used, cap = engine.slots(plan, doc, cfg)
+                if winner and used >= cap:
                     wait = {iid: winner for iid in graph.launchable(plan, graph.states(plan, doc))}
                 doc['priority_wait'] = wait
             finish_tick(t, plan, d, cfg, w, notify)

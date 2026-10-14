@@ -148,9 +148,6 @@ def summary(plan: Plan, doc: dict[str, Any], cfg: Config, now: dt.datetime) -> d
     eligible = []
     for iid in launch:
         it = plan.items[iid]
-        if doc.get('priority_wait', {}).get(iid):
-            waiting.append(f"{iid} (ready, waits for slot taken by higher-priority plan "
-                           f"{doc['priority_wait'][iid]})")
         selected, reason = engine._choose(it, cfg, load, readings)
         if selected:
             try:
@@ -160,6 +157,9 @@ def summary(plan: Plan, doc: dict[str, Any], cfg: Config, now: dt.datetime) -> d
                 attention.append(f"{iid}: {e}")
                 continue
             eligible.append(iid)
+            if doc.get('priority_wait', {}).get(iid):
+                waiting.append(f"{iid} (ready, waits for slot taken by higher-priority plan "
+                               f"{doc['priority_wait'][iid]})")
         if selected is None and reason:
             if all(readings.get(e, {}).get('verdict') == 'not-now' for e in it.engines):
                 waiting.append(f"{iid} (ready, waits for budget ({', '.join(it.engines)}))")

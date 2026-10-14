@@ -12,6 +12,9 @@ CODEX_WORKING = re.compile(r"^•\s+Working\s+\([^)]*\)")
 CODEX_DONE = re.compile(r"^Worked for \d.*\s+•\s+\d{1,2}:\d{2}$")
 CONTEXT_LEFT = re.compile(r"^\d+% context left$")
 INPUT_PREVIEW = 60
+MAX_QUOTE = 80
+UNSENT_PREFIX = '(unsent input: "'
+UNSENT_SUFFIX = '")'
 
 
 def _chrome(line: str) -> bool:
@@ -28,10 +31,14 @@ def _preview_input(parts: list[str]) -> str | None:
     text = " ".join(" ".join(parts).split())
     if not text or text.startswith(("Ask Codex to do anything", "Ask Claude", "Try ")):
         return None
-    if len(text) > INPUT_PREVIEW:
-        text = text[:INPUT_PREVIEW].rsplit(" ", 1)[0] + "…"
     escaped = text.replace('"', r'\"')
-    return f'(unsent input: "{escaped}")'
+    content_limit = min(INPUT_PREVIEW + 1, MAX_QUOTE - len(UNSENT_PREFIX + UNSENT_SUFFIX))
+    if len(escaped) > content_limit:
+        hard = escaped[:content_limit - 1]
+        at_word = hard.rsplit(" ", 1)[0]
+        cut = hard if len(hard) - len(at_word) > len(hard) // 3 else at_word
+        escaped = cut.rstrip("\\ ") + "…"
+    return UNSENT_PREFIX + escaped + UNSENT_SUFFIX
 
 
 def last_visible_line(capture: str) -> str | None:
@@ -40,19 +47,26 @@ def last_visible_line(capture: str) -> str | None:
     lines = [raw.strip().strip(BOX + " ").strip() for raw in raw_lines]
     indented = [raw.startswith(("  ", "\t")) for raw in raw_lines]
 
-    # Codex displays queued messages and tool results as blocks with wrapped continuation lines.
-    nonworker_block = False
+    # Submitted prompts, tool calls, and queued messages can all wrap onto indented lines.
+    block = ""
     skip: set[int] = set()
+    prompt_continuations: set[int] = set()
     for i, line in enumerate(lines):
         if line.startswith(("• Messages to be submitted", "└")):
-            nonworker_block = True
+            block = "other"
             skip.add(i)
-        elif nonworker_block and line.startswith(("• ", "❯", "›")):
-            nonworker_block = False
-        elif nonworker_block and (not line or indented[i] or line.startswith(("↳", "+"))):
+        elif line.startswith("• Ran "):
+            block = "run"
+            skip.add(i)
+        elif line.startswith(("❯", "›")):
+            block = "prompt"
+            skip.add(i)
+        elif block and (not line or indented[i] or line.startswith(("↳", "+"))):
+            if block == "prompt" and indented[i] and line and not _chrome(line):
+                prompt_continuations.add(i)
             skip.add(i)
         else:
-            nonworker_block = False
+            block = ""
 
     # A bottom input box can wrap over several indented lines. An output line below a historical
     # prompt is not part of that box, so reject a candidate as soon as such a line appears.
@@ -61,7 +75,9 @@ def last_visible_line(capture: str) -> str | None:
             continue
         parts = [lines[i][1:].strip()]
         for j in range(i + 1, len(lines)):
-            if _chrome(lines[j]) or j in skip:
+            if lines[j].startswith(("• Ran ", "• Working ")):
+                break
+            if _chrome(lines[j]) or (j in skip and j not in prompt_continuations):
                 continue
             if not indented[j] or lines[j].startswith(("•", "↳", "└", "+")):
                 break

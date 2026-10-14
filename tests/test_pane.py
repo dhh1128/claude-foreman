@@ -71,3 +71,28 @@ def test_wrapped_unsent_claude_input_is_labelled_as_unsent():
                "  tell me when I can land it.\n")
     assert pane.last_visible_line(capture) == \
         '(unsent input: "Please check the updated branch and tell me when I can land…")'
+
+
+def test_historical_wrapped_prompt_is_not_worker_output():
+    capture = (FIXTURES / "codex_historical_prompt_pane.txt").read_text()
+    assert pane.last_visible_line(capture) is None
+
+
+def test_wrapped_run_header_is_not_worker_output():
+    capture = (FIXTURES / "codex_wrapped_run_pane.txt").read_text()
+    assert pane.last_visible_line(capture) == "I am checking the acceptance tests."
+
+
+def test_unsent_preview_keeps_long_path_and_closing_delimiters():
+    capture = ("› Check /Users/daniel/code/me/claude-zamu/.worktrees/quiet-quote/zamu/engine.py\n"
+               "GPT-6-Sol high · ~/code/repo · Read brief\n")
+    quote = pane.last_visible_line(capture)
+    assert quote is not None and quote.startswith('(unsent input: "Check /Users/')
+    assert len(quote) <= 80 and quote.endswith('…")')
+
+
+def test_unsent_preview_with_quotes_fits_render_limit():
+    capture = '› ' + '"long-token"' * 10 + '\nGPT-6-Sol high · ~/code/repo · Read brief\n'
+    quote = pane.last_visible_line(capture)
+    assert quote is not None and len(quote) <= 80
+    assert quote.startswith('(unsent input: "') and quote.endswith('…")')
